@@ -1,0 +1,20 @@
+{
+  "name": "suno-portfolio-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "scrape": "node src/cli.js",
+    "scrape:btg": "node src/cli.js --source btg",
+    "wallet:plan": "node src/plan-cli.js",
+    "login": "node src/cli.js --login",
+    "session:forget": "node src/cli.js --forget-session",
+    "doctor": "node src/doctor.js",
+    "test": "node --test --test-isolation=none test/unit.test.js test/session.test.js test/btg.test.js",
+    "test:browser": "node --test --test-isolation=none test/*browser.test.js",
+    "test:all": "node --test --test-isolation=none test/*.test.js",
+    "browser:install": "playwright install chromium"
+  },
+  "dependencies": { "playwright": "1.64.1" }
+}

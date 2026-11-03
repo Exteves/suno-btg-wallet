@@ -1,0 +1,9 @@
+node_modules/
+privado/
+*.sqlite*
+*.db*
+.env*
+playwright/.auth/
+test-results/
+playwright-report/
+*.log
