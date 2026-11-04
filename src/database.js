@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { privateDirectory, scrubObject, scrubSnapshot, redactUrl } from './privacy.js';
+import { privateDirectory, scrubObject, scrubSnapshot, redactUrl, scrubRequestDiagnostic } from './privacy.js';
 import { catalogProducts } from './catalog.js';
 
 export class Store {
@@ -108,6 +108,18 @@ export class Store {
       );
       PRAGMA user_version=2;
     `);
+    // Older diagnostic rows kept raw paths. Remove route identifiers without
+    // changing the run's status, counts, snapshots or collection timestamps.
+    const legacyBlocks = this.db.prepare("SELECT id,detail FROM issues WHERE code='REQUEST_BLOCKED_READ_ONLY'").all();
+    this.db.exec('PRAGMA secure_delete=ON');
+    const updateBlock = this.db.prepare('UPDATE issues SET detail=? WHERE id=?');
+    for (const row of legacyBlocks) {
+      try {
+        const value = JSON.parse(row.detail);
+        const clean = JSON.stringify(scrubRequestDiagnostic(value));
+        if (clean !== row.detail) updateBlock.run(clean, row.id);
+      } catch { updateBlock.run(JSON.stringify('[CAMINHO REMOVIDO]'), row.id); }
+    }
   }
 
   start(purpose, config) {
@@ -124,6 +136,7 @@ export class Store {
   }
 
   issue(runId, pageId, code, detail = '') {
+    if (['REQUEST_BLOCKED_READ_ONLY', 'DATA_REQUEST_HTTP_ERROR', 'DATA_REQUEST_FAILED'].includes(code)) detail = scrubRequestDiagnostic(detail);
     this.db.prepare('INSERT INTO issues(run_id,page_id,code,detail) VALUES(?,?,?,?)')
       .run(runId, pageId, code, JSON.stringify(scrubObject(detail)));
   }

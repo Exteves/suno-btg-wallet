@@ -1,7 +1,7 @@
 import { scopedUrl, ownership, discoverCatalogRoute } from './policy.js';
 
 export async function extract(page, config) {
-  const data = await page.evaluate(({ contentSelector, walletLinkSelector, cardSelector, productNameSelector }) => {
+  const data = await page.evaluate(({ provider, contentSelector, walletLinkSelector, cardSelector, productNameSelector, categoryTabNames = [] }) => {
     const visible = el => !!(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
     const roots = [...document.querySelectorAll(contentSelector)].filter(visible);
     const root = roots[0];
@@ -18,7 +18,8 @@ export async function extract(page, config) {
       clone.querySelectorAll('p,div,section,article,tr,td,th,h1,h2,h3,h4,li').forEach(node => node.append('\n'));
       return (clone.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
     };
-    const tables = [...root.querySelectorAll('table,[role=table],[role=grid]')].filter(visible).map(table => {
+    const tableElements = [...root.querySelectorAll('table,[role=table],[role=grid]')].filter(visible);
+    const tables = tableElements.map(table => {
       const rows = [...table.querySelectorAll('tr,[role=row]')].filter(visible);
       const headerRows = rows.filter(row => row.querySelector('th,[role=columnheader]') && !row.querySelector('td,[role=cell],[role=gridcell]'));
       const headers = headerRows.length ? [...headerRows.at(-1).querySelectorAll('th,[role=columnheader]')].filter(visible).map(cleanText) : [];
@@ -37,6 +38,43 @@ export async function extract(page, config) {
       name: cleanText(el.querySelector('[data-product-name],h2,h3,h4') || document.createElement('span')),
       fields: fieldsOf(el), text: cleanText(el),
     }));
+    const unidentifiedTables = [];
+    if (provider === 'btg') for (const [index, table] of tables.entries()) {
+      // The BTG landing page uses one headerless label/value table per offer.
+      // Bind it only to an unambiguous title in its own container; never treat
+      // the metric label or a category heading as the product's name.
+      if (table.headers.length || !table.rows.length || !table.rows.every(row => row.length === 2 && row[0])) continue;
+      const fields = Object.fromEntries(table.rows);
+      if (!Object.keys(fields).some(label => /rentab|aplica[çc][aã]o|vencimento|liquidez|cota[çc][aã]o/i.test(label))) continue;
+      const element = tableElements[index];
+      let container = element.parentElement;
+      let found = false;
+      const ancestors = [];
+      const normalize = value => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+      for (let depth = 0; container && container !== root && depth < 8; depth++, container = container.parentElement) {
+        ancestors.push(container.tagName.toLowerCase());
+        if (tableElements.filter(other => container.contains(other)).length !== 1) break;
+        const titleSelector = '[data-product-name],h1,h2,h3,h4,[role=heading],legend,header,[slot=title],[class*=title i],[class*=name i]';
+        const names = [...new Set([...container.querySelectorAll(titleSelector)].filter(el => visible(el)
+          && !element.contains(el) && !el.closest('button,a,[role=button],nav,[data-private]'))
+          .map(cleanText).filter(name => name && name.length <= 300 && !name.includes('\n')
+            && !categoryTabNames.some(category => normalize(category) === normalize(name))
+            && !Object.keys(fields).includes(name)
+            && !/^(?:investir|aplicar|comprar|ver detalhes|detalhes)$/i.test(name)))];
+        if (names.length > 1) break;
+        if (names.length === 1) {
+          const cardIndex = cardElements.findIndex((card, candidateIndex) => card.contains(element)
+            && tableElements.filter(other => card.contains(other)).length === 1
+            && (!productBlocks[candidateIndex].name || productBlocks[candidateIndex].name === names[0]));
+          if (cardIndex >= 0) {
+            Object.assign(productBlocks[cardIndex], { name: names[0], fields: { ...productBlocks[cardIndex].fields, ...fields }, tableIndex: index });
+          } else productBlocks.push({ name: names[0], fields, text: '', tableIndex: index });
+          found = true;
+          break;
+        }
+      }
+      if (!found) unidentifiedTables.push({ tableIndex: index, ancestors });
+    }
     const detailFields = Object.fromEntries([...root.querySelectorAll('dl')].filter(el => visible(el) && !cardElements.some(card => card.contains(el))).flatMap(el => Object.entries(fieldsOf(el))));
     if (Object.keys(detailFields).length) productBlocks.push({ name: cleanText(root.querySelector(productNameSelector || '[data-product-name],h1') || document.createElement('span')), fields: detailFields, text: '' });
     return {
@@ -45,9 +83,11 @@ export async function extract(page, config) {
       text: cleanText(root), tables,
       cards: cardElements.map(cleanText).filter(Boolean),
       productBlocks,
+      unidentifiedTables,
       activeTabs: [...root.querySelectorAll('[role=tab][aria-selected=true]')].filter(visible).map(cleanText),
       readControls: [...root.querySelectorAll('button,[role=button]')].filter(visible).map(el => ({ label: cleanText(el) || el.getAttribute('aria-label') || '' })),
-      links: [...document.querySelectorAll(walletLinkSelector)].filter(visible).map(link => ({ label: cleanText(link), url: link.href })).filter(link => link.url),
+      links: [...document.querySelectorAll(walletLinkSelector)].filter(visible).map(link => ({ label: cleanText(link),
+        url: link.href || link.getAttribute('routerlink') || link.getAttribute('data-href') })).filter(link => link.url),
       scroll: { top: window.scrollY, height: document.documentElement.scrollHeight },
     };
   }, config);
@@ -71,6 +111,10 @@ export async function assertReadable(page, config) {
   const body = await page.locator('body').innerText();
   if (/verifique (?:que voc[eê]|se voc[eê]) [eé] humano|verify you are human|just a moment|access denied|acesso negado/i.test(body)) {
     throw Object.assign(new Error('ACCESS_CHALLENGE'), { code: 'ACCESS_CHALLENGE' });
+  }
+  const content = await page.locator(config.contentSelector).first().innerText().catch(() => '');
+  if (/n[aã]o foi poss[ií]vel carregar (?:as )?informa[çc][oõ]es|erro ao carregar (?:os produtos|as informa[çc][oõ]es)/i.test(content)) {
+    throw Object.assign(new Error('APPLICATION_LOAD_ERROR'), { code: 'APPLICATION_LOAD_ERROR' });
   }
   if (/sess[aã]o expirou|session expired|fa[çc]a (?:o )?login|entre (?:na|em sua) conta|acesse sua conta/i.test(body)
       && !(await page.locator('table:visible,[role=grid]:visible').count())) {

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { fold } from './policy.js';
 
 const aliases = {
-  name: ['produto', 'nome', 'nome do produto', 'ativo', 'titulo', 'fundo', 'nome do fundo'],
+  name: ['produto', 'produto e risco', 'nome', 'nome do produto', 'ativo', 'titulo', 'fundo', 'nome do fundo'],
   ticker: ['ticker', 'codigo de negociacao', 'codigo b3'],
   isin: ['isin', 'codigo isin'],
   product_cnpj: ['cnpj do fundo', 'cnpj da classe', 'cnpj do produto'],
@@ -13,7 +13,7 @@ const aliases = {
   rate_text: ['taxa', 'rentabilidade', 'remuneracao', 'taxa indicativa'],
   maturity_text: ['vencimento', 'data de vencimento'],
   liquidity_text: ['liquidez', 'prazo de liquidez'],
-  minimum_text: ['aplicacao minima', 'investimento minimo', 'valor minimo'],
+  minimum_text: ['aplicacao minima', 'aplicacao min.', 'investimento minimo', 'valor minimo'],
   price_text: ['preco', 'cotacao', 'preco unitario', 'pu'],
   currency: ['moeda'],
   risk_text: ['risco', 'classificacao de risco', 'perfil de risco'],

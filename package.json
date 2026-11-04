@@ -7,11 +7,12 @@
   "scripts": {
     "scrape": "node src/cli.js",
     "scrape:btg": "node src/cli.js --source btg",
+    "btg:browser": "node src/manual-browser.js",
     "wallet:plan": "node src/plan-cli.js",
     "login": "node src/cli.js --login",
     "session:forget": "node src/cli.js --forget-session",
     "doctor": "node src/doctor.js",
-    "test": "node --test --test-isolation=none test/unit.test.js test/session.test.js test/btg.test.js",
+    "test": "node --test --test-isolation=none test/unit.test.js test/session.test.js test/btg.test.js test/login.test.js test/cdp.test.js test/crawler.test.js test/scroll.test.js",
     "test:browser": "node --test --test-isolation=none test/*browser.test.js",
     "test:all": "node --test --test-isolation=none test/*.test.js",
     "browser:install": "playwright install chromium"

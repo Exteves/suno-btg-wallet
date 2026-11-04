@@ -5,6 +5,15 @@ Também há coleta do catálogo BTG, com login manual e sessão temporária:
 limites de cobertura e o registro privado do objetivo de alocação. As duas fontes
 compartilham o banco e permanecem identificadas separadamente.
 
+O BTG está configurado para as cinco listas de renda fixa e fundos indicadas pelo
+usuário, com rolagem progressiva e relatório por página. As demais categorias não
+são percorridas. Veja [escopo e critérios de conclusão](docs/BTG.md#escopo-atual-cinco-listas-com-carregamento-progressivo).
+
+Se o login funciona no Chrome manual e falha no navegador iniciado pelo Playwright,
+há uma conexão local opcional: `npm run btg:browser`, login manual e depois
+`npm run scrape:btg -- --cdp http://127.0.0.1:9222` em outro terminal. Consulte o
+guia BTG para isolamento da janela anônima, limpeza e limites de compatibilidade.
+
 Coleta pontual com Playwright para pesquisar os dados disponíveis em **Portfólio**
 e **Carteiras**, quando você for iniciar ou rebalancear uma carteira. Não há
 agendamento nem integração de negociação. `--purpose` identifica a finalidade da
@@ -293,10 +302,11 @@ Os testes de navegador cobrem descoberta de carteiras, paginação, abas, lazy
 loading, privacidade, bloqueio de escrita, expiração de login e restauração de cookies
 e tokens em um novo contexto a partir do cofre criptografado. Usam interceptação
 do Playwright, sem servidor local ou acesso à Suno. Ainda precisam ser executados
-em um ambiente que permita iniciar o Chromium. Os 24 testes unitários passaram
-em 2026-11-03, incluindo criptografia autenticada, adulteração, expiração, remoção,
+em um ambiente que permita iniciar o Chromium. Os 48 testes unitários passaram
+em 2026-11-04, incluindo criptografia autenticada, adulteração, expiração, remoção,
 chaveiro indisponível, confirmação de login, catálogo BTG, migração e plano de
-alocação. Os testes de navegador ficaram
+alocação, opções de navegador, transferência de sessão em memória e diagnóstico de
+login sem conteúdo privado. Os testes de navegador ficaram
 impedidos pelas restrições do ambiente; a integração real com o chaveiro e a Suno
 permanece sem validação. Os testes unitários usam um chaveiro simulado e dados
 sintéticos, sem acessar credenciais do sistema.
