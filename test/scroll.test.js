@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { walkProgressiveList, watchCollectionLoads } from '../src/scroll.js';
+import { walkProgressiveList, watchCollectionLoads, scrollConfigForPage, walkWithRecovery } from '../src/scroll.js';
 import { loadConfig } from '../src/config.js';
 import { collectionPolicy } from '../src/policy.js';
 
@@ -125,7 +125,7 @@ test('only allowed first-party data requests affect readiness; listeners and pen
   page.emit('request', read);
   watcher.detach();
   assert.equal(watcher.isLoading(), false);
-  for (const event of ['request', 'requestfinished', 'requestfailed', 'response']) assert.equal(page.listenerCount(event), 0);
+  for (const event of ['request', 'requestfinished', 'requestfailed', 'response', 'framenavigated']) assert.equal(page.listenerCount(event), 0);
 });
 
 test('observed movement after an initially unchanged scroll position is not classified as stalled', async () => {
@@ -252,4 +252,141 @@ test('new data resets the inactivity bound, so a slowly revealing list can conti
   });
   assert.equal(result.reason, 'time_limit');
   assert.equal(result.data, 3);
+});
+
+test('funds can finish after the old five-minute cutoff while the other lists retain their original budget', async () => {
+  const config = await loadConfig('btg.config.json');
+  const fundsUrl = `${config.baseUrl}/produtos-de-investimento/fundos-de-investimento`;
+  const funds = scrollConfigForPage(config, fundsUrl);
+  const credit = scrollConfigForPage(config, `${config.baseUrl}/produtos-de-investimento/renda-fixa/credito-bancario`);
+  assert.equal(funds.maxScrollDurationMs, 900000);
+  assert.equal(config.maxScrollDurationMs, 300000);
+  assert.equal(credit.maxScrollDurationMs, 300000);
+  assert.equal(funds.scrollNoProgressMs, config.scrollNoProgressMs);
+  assert.equal(funds.maxScrollSteps, config.maxScrollSteps);
+  for (const url of ['https://other.test/produtos-de-investimento/fundos-de-investimento',
+    `${fundsUrl}/details`, `https://private@app.btgpactual.com/produtos-de-investimento/fundos-de-investimento`]) {
+    assert.equal(scrollConfigForPage(config, url), config);
+  }
+  const simulate = async selected => {
+    let time = 0;
+    const limits = new Set();
+    const result = await walkProgressiveList({
+      config: selected, now: () => time,
+      capture: async () => ({ fingerprint: `batch:${Math.floor(time / 30000)}`, data: Math.floor(time / 30000) }),
+      scroll: async () => ({ before: 0, after: 0, height: 100, viewport: 100, target: 'list', busy: time < 400000 }),
+      wait: async ms => { time += ms; }, onProgress: report => limits.add(report.timeLimitMs),
+    });
+    assert.deepEqual([...limits], [selected.maxScrollDurationMs]);
+    return result;
+  };
+  const limited = await simulate(credit);
+  assert.equal(limited.reason, 'time_limit');
+  const completed = await simulate(funds);
+  assert.equal(completed.reason, 'end_observed');
+  assert.ok(completed.elapsedMs > config.maxScrollDurationMs);
+  assert.ok(completed.elapsedMs < funds.maxScrollDurationMs);
+});
+
+test('pending reads expose sanitized age/stage and cannot leak from one document into the next', async () => {
+  const config = collectionPolicy(await loadConfig('btg.config.json'));
+  const page = new EventEmitter();
+  let time = 100;
+  const watcher = watchCollectionLoads(page, config, () => {}, { now: () => time });
+  const read = () => ({ method: () => 'GET', resourceType: () => 'fetch', isNavigationRequest: () => false,
+    url: () => `${config.baseUrl}/investments/api/government-bond/account/PRIVATE-ACCOUNT?token=PRIVATE-TOKEN` });
+  const old = read();
+  page.emit('request', old);
+  time = 1100;
+  assert.equal(watcher.pendingRequests()[0].ageMs, 1000);
+  assert.equal(watcher.pendingRequests()[0].stage, 'awaiting_response');
+  page.emit('response', { request: () => old, status: () => 200 });
+  assert.equal(watcher.pendingRequests()[0].stage, 'receiving_body');
+  assert.equal(watcher.pendingRequests()[0].status, 200);
+  assert.ok(!JSON.stringify(watcher.pendingRequests()).includes('PRIVATE'));
+  page.emit('framenavigated', { parentFrame: () => ({}) });
+  assert.equal(watcher.pendingCount(), 1);
+  page.emit('framenavigated', { parentFrame: () => null }); // Same-document SPA navigation has no document request.
+  assert.equal(watcher.pendingCount(), 1);
+  watcher.beginNavigation();
+  page.emit('framenavigated', { parentFrame: () => null });
+  assert.equal(watcher.pendingCount(), 0);
+  const fresh = read();
+  page.emit('request', fresh);
+  page.emit('requestfinished', old);
+  page.emit('response', { request: () => old, status: () => 401 });
+  assert.equal(watcher.pendingCount(), 1);
+  assert.equal(watcher.requiresAuthentication(), false);
+  page.emit('response', { request: () => fresh, status: () => 401 });
+  watcher.beginNavigation();
+  page.emit('framenavigated', { parentFrame: () => null });
+  assert.equal(watcher.requiresAuthentication(), true); // A reload alone is not renewed authentication.
+  const authorized = read();
+  page.emit('request', authorized);
+  page.emit('response', { request: () => authorized, status: () => 200 });
+  assert.equal(watcher.requiresAuthentication(), false);
+  watcher.detach();
+  assert.equal(page.listenerCount('framenavigated'), 0);
+});
+
+test('a stalled list gets one reload, retains captured windows and can finish within a shared budget', async () => {
+  let time = 0;
+  let recovered = false;
+  let reloads = 0;
+  const saved = new Set();
+  const config = { ...options, scrollIdleMs: 200, scrollNoProgressMs: 500, maxScrollDurationMs: 5000,
+    navigationTimeoutMs: 1000, scrollReloadAttempts: 1 };
+  const budgets = [];
+  const recoveries = [];
+  const result = await walkWithRecovery({
+    config, now: () => time,
+    walk: (attemptConfig, offset) => {
+      budgets.push({ duration: attemptConfig.maxScrollDurationMs, steps: attemptConfig.maxScrollSteps, offset });
+      return walkProgressiveList({ config: attemptConfig, now: () => time, isLoading: () => !recovered,
+        capture: async () => { const data = recovered ? 'final-window' : 'initial-window'; saved.add(data); return { data, fingerprint: data }; },
+        scroll: async () => ({ before: 0, after: 0, height: 100, viewport: 100, target: 'list' }),
+        wait: async ms => { time += ms; },
+      });
+    },
+    onRecovery: event => recoveries.push(event.attempt),
+    reload: async timeout => { assert.ok(timeout <= 1000); time += 200; reloads++; recovered = true; },
+  });
+  assert.equal(result.reason, 'end_observed');
+  assert.equal(result.reloads, 1);
+  assert.equal(reloads, 1);
+  assert.deepEqual([...saved], ['initial-window', 'final-window']);
+  assert.deepEqual(recoveries, [1]);
+  assert.ok(budgets[1].duration < budgets[0].duration);
+  assert.ok(budgets[1].steps < budgets[0].steps);
+  assert.ok(budgets[1].offset.elapsedMs > 0);
+  assert.equal(result.elapsedMs, time);
+  assert.equal(config.maxScrollDurationMs, 5000);
+});
+
+test('recovery stays bounded, never resets the time budget, and propagates authorization failures', async () => {
+  const config = { ...options, scrollIdleMs: 200, scrollNoProgressMs: 500, maxScrollDurationMs: 3000,
+    navigationTimeoutMs: 1000, scrollReloadAttempts: 1 };
+  for (const reloadDelay of [100, 3000]) {
+    let time = 0;
+    let reloads = 0;
+    const result = await walkWithRecovery({
+      config, now: () => time,
+      walk: attemptConfig => walkProgressiveList({ config: attemptConfig, now: () => time, isLoading: () => true,
+        capture: async () => ({ fingerprint: 'same-list', data: 'preserved' }),
+        scroll: async () => ({ before: 0, after: 0, height: 100, viewport: 100, target: 'list' }),
+        wait: async ms => { time += ms; },
+      }),
+      reload: async () => { time += reloadDelay; reloads++; },
+    });
+    assert.equal(reloads, 1);
+    assert.equal(result.reloads, 1);
+    assert.equal(result.reason, reloadDelay === 100 ? 'loading_stalled' : 'time_limit');
+    assert.equal(result.data, 'preserved');
+  }
+  let reloads = 0;
+  await assert.rejects(walkWithRecovery({ config,
+    walk: async () => { throw Object.assign(new Error('API_AUTHENTICATION_REQUIRED'), { code: 'API_AUTHENTICATION_REQUIRED' }); },
+    reload: async () => { reloads++; },
+  }), error => error.code === 'API_AUTHENTICATION_REQUIRED');
+  assert.equal(reloads, 0);
 });

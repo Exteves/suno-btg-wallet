@@ -41,6 +41,13 @@ export async function loadConfig(path) {
   }
   if (config.maxScrollDurationMs <= config.scrollIdleMs) throw new Error('O limite de rolagem deve superar a espera no final da lista.');
   if (config.scrollNoProgressMs <= config.scrollIdleMs) throw new Error('O limite sem progresso deve superar a espera no final da lista.');
+  config.scrollReloadAttempts ??= 0;
+  if (!Number.isInteger(config.scrollReloadAttempts) || config.scrollReloadAttempts < 0 || config.scrollReloadAttempts > 2) throw new Error('Limite de recargas inválido.');
+  config.scrollDurationByPath ??= {};
+  if (typeof config.scrollDurationByPath !== 'object' || Array.isArray(config.scrollDurationByPath)
+    || Object.entries(config.scrollDurationByPath).some(([path, duration]) => !path.startsWith('/') || path.startsWith('//')
+      || !scopedUrl(path, collectionPolicy(config)) || new URL(path, config.baseUrl).pathname !== path
+      || !Number.isSafeInteger(duration) || duration <= config.scrollIdleMs)) throw new Error('Limites de rolagem por página inválidos.');
   if (typeof config.contentSelector !== 'string' || !config.contentSelector) throw new Error('contentSelector obrigatório.');
   for (const view of config.views) {
     if (!view.name || !view.selector || (view.kind !== 'tab' && view.kind !== 'expand')) {
@@ -87,4 +94,17 @@ export async function loadConfig(path) {
     throw new Error('Configuração inválida: sessão/autenticação.');
   }
   return config;
+}
+
+export function selectCollectionPaths(config, paths) {
+  if (!paths?.length) return config;
+  if (config.provider !== 'btg' || !Array.isArray(paths) || paths.some(path => !config.seedPaths.includes(path))) {
+    throw new Error('Seleção de páginas inválida.');
+  }
+  const selected = config.seedPaths.filter(path => paths.includes(path));
+  const categories = (config.categoryPathMappings || []).filter(mapping => selected.some(path => path === mapping.pathPrefix
+    || path.startsWith(`${mapping.pathPrefix.replace(/\/$/, '')}/`))).map(mapping => mapping.category);
+  return { ...config, seedPaths: selected, collectionPaths: selected, maxPages: Math.min(config.maxPages, selected.length),
+    expectedCategories: (config.expectedCategories || []).filter(category => categories.includes(category)),
+    scrollDurationByPath: Object.fromEntries(Object.entries(config.scrollDurationByPath || {}).filter(([path]) => selected.includes(path))) };
 }

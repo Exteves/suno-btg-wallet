@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { extract, assertReadable, settle } from './extract.js';
 import { scopedUrl, sourceKind, installReadOnlyGuard, unsafeControlLabel, fold, discoverCatalogRoute, collectionPolicy } from './policy.js';
-import { scrollRenderedPage, walkProgressiveList, watchCollectionLoads } from './scroll.js';
+import { scrollRenderedPage, walkProgressiveList, watchCollectionLoads, scrollConfigForPage, walkWithRecovery } from './scroll.js';
 
 function errorCode(error) {
   return ['CONTENT_ROOT_MISSING', 'AUTH_OR_SCOPE_REDIRECT', 'LOGIN_REQUIRED', 'ACCESS_CHALLENGE', 'APPLICATION_LOAD_ERROR', 'API_AUTHENTICATION_REQUIRED'].includes(error.code)
@@ -85,30 +85,57 @@ export async function collect({ page, config, store, purpose, onProgress = () =>
   }
 
   async function capture(view, paginationIndex) {
-    const result = await walkProgressiveList({
-      config,
-      scroll: options => scrollRenderedPage(page, config, options),
-      wait: milliseconds => page.waitForTimeout(milliseconds),
-      isLoading: () => loads?.isLoading() || false,
-      onProgress: progress => {
-        const records = config.provider === 'btg' ? store.db.prepare('SELECT count(DISTINCT c.fingerprint) n FROM catalog_products c JOIN snapshots s ON s.id=c.snapshot_id WHERE s.page_id=?').get(currentPageId).n : undefined;
-        onProgress({ phase: 'scroll', runId, page: currentPageNumber, queued: queue.length,
-          distinctProductRecords: records, pendingRequests: loads?.pendingCount() || 0, ...progress });
+    const scrollConfig = scrollConfigForPage(config, page.url());
+    if (currentResult) currentResult.scrollTimeLimitMs = scrollConfig.maxScrollDurationMs;
+    const result = await walkWithRecovery({
+      config: scrollConfig,
+      walk: (attemptConfig, offset) => walkProgressiveList({
+        config: attemptConfig,
+        scroll: options => scrollRenderedPage(page, config, options),
+        wait: milliseconds => page.waitForTimeout(milliseconds),
+        isLoading: () => loads?.isLoading() || false,
+        onProgress: progress => {
+          const records = config.provider === 'btg' ? store.db.prepare('SELECT count(DISTINCT c.fingerprint) n FROM catalog_products c JOIN snapshots s ON s.id=c.snapshot_id WHERE s.page_id=?').get(currentPageId).n : undefined;
+          onProgress({ phase: 'scroll', runId, page: currentPageNumber, queued: queue.length,
+            distinctProductRecords: records, pendingRequests: loads?.pendingCount() || 0, ...progress,
+            step: offset.steps + progress.step, elapsedMs: offset.elapsedMs + progress.elapsedMs,
+            timeLimitMs: scrollConfig.maxScrollDurationMs });
+        },
+        capture: async () => {
+          await assertCollectionReadable();
+          const data = await extract(page, config);
+          if (data.unidentifiedTables?.length) issueOnce('PRODUCT_TABLE_TITLES_UNRESOLVED', data.unidentifiedTables);
+          if (!data.text.trim() && !data.tables.some(table => table.rows.length) && !data.productBlocks.length) {
+            throw Object.assign(new Error('CONTENT_ROOT_MISSING'), { code: 'CONTENT_ROOT_MISSING' });
+          }
+          if (config.followDiscoveredLinks !== false) for (const link of data.links) enqueue(link.url, page.url());
+          const fingerprint = createHash('sha256').update(JSON.stringify(data)).digest('hex');
+          if (store.save(currentPageId, view, paginationIndex, data, config.recordMappings, config)) stats.snapshots++;
+          await captureDetails(view, paginationIndex, data);
+          return { data, fingerprint };
+        },
+      }),
+      onRecovery: recovery => {
+        const detail = { attempt: recovery.attempt, maxAttempts: recovery.maxAttempts,
+          scrollState: { ...recovery.result.state, pendingRequests: loads?.pendingRequests() || [] } };
+        issue('SCROLL_RELOAD_AFTER_STALL', detail);
+        if (currentResult) (currentResult.scrollRecoveries ||= []).push(detail);
+        onProgress({ phase: 'scroll_reload', runId, page: currentPageNumber, queued: queue.length,
+          attempt: recovery.attempt, maxAttempts: recovery.maxAttempts });
       },
-      capture: async () => {
+      reload: async timeout => {
         await assertCollectionReadable();
-        const data = await extract(page, config);
-        if (data.unidentifiedTables?.length) issueOnce('PRODUCT_TABLE_TITLES_UNRESOLVED', data.unidentifiedTables);
-        if (!data.text.trim() && !data.tables.some(table => table.rows.length) && !data.productBlocks.length) {
-          throw Object.assign(new Error('CONTENT_ROOT_MISSING'), { code: 'CONTENT_ROOT_MISSING' });
-        }
-        if (config.followDiscoveredLinks !== false) for (const link of data.links) enqueue(link.url, page.url());
-        const fingerprint = createHash('sha256').update(JSON.stringify(data)).digest('hex');
-        if (store.save(currentPageId, view, paginationIndex, data, config.recordMappings, config)) stats.snapshots++;
-        await captureDetails(view, paginationIndex, data);
-        return { data, fingerprint };
+        loads?.beginNavigation();
+        const response = await page.reload({ waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.floor(timeout)) });
+        if (response && !response.ok()) { issue('HTTP_ERROR', { status: response.status() }); throw new Error('HTTP_ERROR'); }
+        await assertCollectionReadable();
+        if (!await settle(page, config)) issue('CONTENT_NOT_STABLE');
+        await scrollPage(true);
       },
     });
+    if (result.reason !== 'end_observed' && loads?.pendingCount()) result.state = {
+      ...result.state, pendingRequests: loads.pendingRequests(),
+    };
     if (currentResult && (!currentResult.scrollCompletion || currentResult.scrollCompletion === 'end_observed')) {
       currentResult.scrollCompletion = result.reason;
     }
@@ -119,6 +146,7 @@ export async function collect({ page, config, store, purpose, onProgress = () =>
     if (currentResult) {
       currentResult.scrollSteps = (currentResult.scrollSteps || 0) + result.steps;
       currentResult.scrollElapsedMs = (currentResult.scrollElapsedMs || 0) + result.elapsedMs;
+      currentResult.scrollReloads = (currentResult.scrollReloads || 0) + result.reloads;
     }
     return result.data;
   }
@@ -278,6 +306,7 @@ export async function collect({ page, config, store, purpose, onProgress = () =>
       if (currentResult) stats.pageResults.push(currentResult);
       onProgress({ phase: 'page_start', runId, page: processed, queued: queue.length });
       try {
+        loads?.beginNavigation();
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeoutMs });
         if (response && !response.ok()) { issue('HTTP_ERROR', { status: response.status() }); throw new Error('HTTP_ERROR'); }
         await assertCollectionReadable();

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { Store } from '../src/database.js';
 import { collect } from '../src/crawler.js';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, selectCollectionPaths } from '../src/config.js';
 
 async function legacyFixtureConfig() {
   const defaults = await loadConfig('btg.config.json');
@@ -11,6 +11,60 @@ async function legacyFixtureConfig() {
     autoTabs: true, autoCategoryButtons: true, maxPages: 20, scrollIdleMs: 30, scrollBottomSamples: 3,
     categoryPathMappings: [], expectedCategories: ['fixed_income', 'real_estate_funds', 'international_equities', 'brazilian_equities'] };
 }
+
+test('funds recover once from a stalled browser query, retaining products and respecting the selected page', { timeout: 30000 }, async () => {
+  const defaults = selectCollectionPaths(await loadConfig('btg.config.json'), ['/produtos-de-investimento/fundos-de-investimento']);
+  const store = new Store(':memory:');
+  const stalled = [];
+  let browser;
+  let documents = 0;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 900, height: 500 } });
+    await context.route('**/*', async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/investments/api/fund-subscription/v2/account') {
+        const batch = route.request().postDataJSON().page;
+        if (documents === 1 && batch === 1) { stalled.push(route); return; }
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: Array.from({ length: 4 }, (_, i) => batch * 4 + i) }) });
+      }
+      assert.equal(path, defaults.seedPaths[0]);
+      assert.equal(route.request().method(), 'GET');
+      documents++;
+      for (const old of stalled.splice(0)) await old.abort().catch(() => {});
+      await route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><main>
+        <h1>Fundos de investimento</h1><div id="list" style="height:180px;overflow:auto">
+        <table><tr><th>Produto</th></tr><tbody id="rows"></tbody></table></div>
+        <script>
+          const list=document.querySelector('#list'), rows=document.querySelector('#rows');
+          let count=0, pending=false;
+          async function load(){
+            if(pending||count>=8)return;
+            pending=true;list.setAttribute('aria-busy','true');
+            const response=await fetch('/investments/api/fund-subscription/v2/account',{
+              method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({page:count/4,pageSize:4})});
+            const data=await response.json();
+            rows.insertAdjacentHTML('beforeend',data.items.map(id=>'<tr style="height:60px"><td>Fundo sintético '+id+'</td></tr>').join(''));
+            count+=data.items.length;pending=false;list.setAttribute('aria-busy','false');
+          }
+          list.addEventListener('scroll',()=>{if(list.scrollTop+list.clientHeight>=list.scrollHeight-2)void load();});
+          void load();
+        </script></main>` });
+    });
+    const page = await context.newPage();
+    const config = { ...defaults, settleMs: 10, scrollIdleMs: 30, scrollNoProgressMs: 150, navigationTimeoutMs: 3000,
+      maxScrollDurationMs: 5000, scrollDurationByPath: {}, maxScrollSteps: 300 };
+    const result = await collect({ page, config, store, purpose: 'start' });
+    assert.equal(documents, 2);
+    assert.equal(result.pagesFailed, 0);
+    assert.equal(result.pageResults.length, 1);
+    assert.equal(result.pageResults[0].scrollCompletion, 'end_observed');
+    assert.equal(result.pageResults[0].scrollReloads, 1);
+    assert.equal(result.pageResults[0].distinctProductRecords, 8);
+    assert.equal(store.db.prepare("SELECT count(*) n FROM issues WHERE code='SCROLL_RELOAD_AFTER_STALL'").get().n, 1);
+    assert.equal(store.db.prepare("SELECT count(*) n FROM issues WHERE code='SCROLL_LOADING_STALLED'").get().n, 0);
+  } finally { await browser?.close(); store.close(); }
+});
 
 test('five exact BTG routes capture incremental and virtualized internal lists without crawling other categories', { timeout: 30000 }, async () => {
   const defaults = await loadConfig('btg.config.json');

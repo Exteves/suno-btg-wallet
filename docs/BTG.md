@@ -33,6 +33,12 @@ O fim é observado quando há pelo menos três amostras no final da lista, duran
 sem consultas de dados permitidas pendentes. Isso é um critério de estabilização,
 não comprovação de catálogo integral. `scrollIdleMs`, `scrollBottomSamples`,
 `maxScrollSteps` (1500) e `maxScrollDurationMs` (300000) controlam esse percurso.
+Fundos de investimento tem uma exceção por caminho em `scrollDurationByPath`:
+900000ms (15 minutos). As outras quatro listas mantêm o limite de cinco minutos.
+O limite de inatividade de 45 segundos continua igual em todas as listas. A
+exceção permite continuar recebendo lotes sem remover os limites ou declarar uma
+lista cortada como completa. O orçamento aplicado aparece no progresso e em
+`pageResults[].scrollTimeLimitMs`.
 Limites atingidos geram avisos e conclusão parcial, não uma indicação de fim.
 Os tempos de navegação e operações do Playwright têm seus próprios limites.
 
@@ -43,9 +49,25 @@ aguardando indicador/consultas. Cada página também tem uma mensagem de encerra
 amostras, sem imprimir ativos, valores ou credenciais.
 
 Se conteúdo, posição e dimensões não mudarem durante `scrollNoProgressMs` (45000),
-um carregamento persistente encerra aquela lista como parcial, com
-`scrollCompletion: "loading_stalled"` e `SCROLL_LOADING_STALLED`. Os dados já salvos
-permanecem. Isso não deve ser tratado como catálogo completo. Leituras de fundo
+um carregamento persistente permite uma recarga controlada da página, configurada
+por `scrollReloadAttempts: 1` no BTG (zero por padrão nas outras configurações;
+valores aceitos de zero a dois). A recarga usa o próprio frontend, na mesma aba,
+sob o mesmo guard: não reconstrói nem repete manualmente corpos de requisições.
+Snapshots já gravados ficam preservados. Tempo e passos das tentativas compartilham
+o orçamento original, incluindo a espera da recarga; o limite de 15 minutos de
+fundos não recomeça. 401 e outros erros de acesso não disparam essa recuperação.
+
+A tentativa fica em `SCROLL_RELOAD_AFTER_STALL` e `scrollRecoveries`, com endpoint
+sanitizado, método, idade da consulta e etapa (`awaiting_response` ou
+`receiving_body`), sem query, headers, payloads ou respostas. Pendências do documento
+anterior são descartadas durante a navegação; isso não limpa um 401 confirmado,
+que só é removido por uma resposta de sucesso na mesma consulta.
+
+Se continuar sem progresso após a tentativa permitida, a lista termina parcial,
+com `scrollCompletion: "loading_stalled"` e `SCROLL_LOADING_STALLED`; `scrollState`
+inclui `pendingRequests` para identificar quais leituras ainda estavam em voo.
+`scrollReloads` informa quantas recargas ocorreram. Isso não deve ser tratado como
+catálogo completo. Leituras de fundo
 sem relação com produtos não impedem o fim da lista; os erros dessas leituras
 continuam no diagnóstico. Uma barra de progresso já no valor máximo não conta
 como carregamento. Mudanças apenas no índice DOM usado para descrever o contêiner
@@ -171,6 +193,18 @@ No **segundo terminal**, execute:
 ```sh
 npm run scrape:btg -- --cdp http://127.0.0.1:9222
 ```
+
+Para repetir somente fundos e preservar as outras coletas no histórico:
+
+```sh
+npm run scrape:btg -- --cdp http://127.0.0.1:9222 \
+  --only-path /produtos-de-investimento/fundos-de-investimento
+```
+
+`--only-path` é repetível e só aceita caminhos exatos já presentes em `seedPaths`.
+A seleção reduz fila, escopo e categorias esperadas; não acrescenta novas rotas
+nem altera o fluxo de login. Os resultados ficam em uma nova execução, sem
+reclassificar uma coleta anterior incompleta.
 
 Confirme com Enter a aba que deseja consultar. A porta de depuração dá controle
 ao Chrome dessa sessão; por isso o utilitário usa somente `127.0.0.1` e um perfil
@@ -437,6 +471,8 @@ foi fornecida pelo usuário; os seletores internos ainda não foram confirmados.
 - `categoryPathMappings`: associações confirmadas entre `pathPrefix` e `category`.
 - `nextSelector`, `loadMoreSelector`, `scrollContainerSelector`: controles de listagem.
 - `scrollIdleMs`, `scrollBottomSamples`, `scrollNoProgressMs`, `maxScrollSteps`, `maxScrollDurationMs`: estabilização e limites da rolagem.
+- `scrollDurationByPath`: limite de tempo por caminho exato já permitido para coleta; não acrescenta rotas ao escopo.
+- `scrollReloadAttempts`: recargas permitidas após falta de progresso no carregamento, dentro do mesmo orçamento.
 - `progressIntervalMs`: frequência das mensagens durante a rolagem.
 - `authenticatedSelector`: elemento exclusivo da página autenticada, se confirmado.
 - `expectedCategories`: classes esperadas para o objetivo de pesquisa, sem supor oferta.

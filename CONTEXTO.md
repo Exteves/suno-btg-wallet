@@ -1,5 +1,72 @@
 # Contexto — 2026-11-02
 
+## Execução BTG 13: fundos com consulta pendente e recuperação limitada — 2026-11-05
+
+Usuário enviou run13 partial: crédito 666/end_observed, títulos 41/end_observed,
+Tesouro 36/end_observed, renda fixa geral um/end_observed, fundos 480/loading_stalled.
+Total 1224 fingerprints distintos; sem falhas de página. Estado final de fundos
+mostra documento no fundo, busy=false, ao menos uma consulta pendente, sem mudanças
+por 46184ms. SQLite confirmou somente SCROLL_LOADING_STALLED além dos avisos
+normais. Não houve HTTP 401/403 nem erro de rede registrado. Não afirmar que chegou
+ao fim, nem que falta de erro HTTP prova consulta saudável: o observador antigo
+não guardava endpoint/idade/etapa das pendências.
+
+watchCollectionLoads agora conserva temporização em memória e expõe apenas path
+sanitizado, método/tipo/origem, ageMs, estágio e status numérico das consultas de
+catálogo em voo (limite 20). Sem headers, query, body ou dados privados. Navegação
+controlada/main-frame limpa pendências do documento antigo; iframe não limpa.
+401 confirmado permanece até sucesso da mesma consulta, não some por reload.
+
+Adicionado walkWithRecovery: uma recarga por padrão no BTG após loading_stalled,
+com snapshots anteriores preservados e orçamentos de tempo/passos compartilhados
+entre tentativas e espera da recarga. Não refaz fetch/POST manualmente nem altera
+payloads/guard. A própria página é recarregada no contexto de coleta; sessão manual
+continua separada. Sem recarga para 401, exceções de acesso, time_limit ou step_limit.
+SCROLL_RELOAD_AFTER_STALL e scrollRecoveries registram a tentativa e pendências;
+se persistir, final permanece parcial com pendingRequests e scrollReloads.
+
+Nova opção BTG --only-path, repetível, aceita somente seeds exatas já configuradas.
+Reduz collectionPaths/fila/maxPages/categorias esperadas e mantém login/CDP igual.
+Permite repetir apenas /produtos-de-investimento/fundos-de-investimento sem
+recapturar as quatro listas concluídas; resultado vira nova run, não apaga histórico.
+
+83 testes unitários passaram: leitura de pendências sanitizadas, limpeza por
+documento, retenção de 401, recuperação com relógio simulado, preservação de janelas,
+uma tentativa máxima, orçamento não reiniciado, erro de autenticação propagado e
+seleção de caminhos sem ampliar escopo. CLI --help validada. Fixture real de browser
+preparada para POST de fundos preso, reload e captura posterior completa; ainda
+não validada neste ambiente que já bloqueou lançamento do Chromium. Documentação
+oficial Playwright Page.reload/framenavigated/Request consultada sem dados privados.
+Não reclassificar run13 como sucesso; solução precisa de nova coleta autenticada.
+
+## Execução BTG 12: fundos cortados pelo orçamento global — 2026-11-05
+
+Usuário enviou execução 12 partial com cinco páginas capturadas e zero falhas:
+crédito 590 registros distintos/end_observed; títulos públicos 30/end_observed;
+Tesouro 36/end_observed; renda fixa geral um/end_observed; fundos 530/time_limit
+aos 300493ms. Total 1187 fingerprints distintos, não necessariamente ativos únicos.
+Consulta local confirmou somente SCROLL_TIME_LIMIT_REACHED como falha de percurso,
+além dos avisos normais de layout/cobertura/requisições bloqueadas. Os logs mostram
+novos lotes em fundos no fim do orçamento; não considerar essa lista completa nem
+usar os 659 registros da execução 11 como meta garantida (ofertas/campos variam).
+
+Adicionado scrollDurationByPath, validado para caminhos exatos já permitidos,
+com valores inteiros finitos maiores que a espera de estabilidade. Configuração
+BTG dá 900000ms (15min) a fundos e preserva 300000ms para as outras listas.
+scrollConfigForPage aplica cópia do orçamento apenas à rota da página atual; não
+muda política de requisições, escopo, passos, estabilidade ou inatividade de 45s.
+Terminal mostra tempo/limite e resumo por página inclui scrollTimeLimitMs.
+Histórico da execução 12 não foi modificado. Sem commit automático das novas
+alterações: usuário havia solicitado commit de mudanças anteriores, e o repositório
+estava limpo no início deste turno; este ajuste é posterior.
+
+79 testes unitários passaram. Regressão de relógio simulado confirma que fundos
+consegue terminar após cinco minutos, outras listas continuam limitadas e a
+configuração original não é mutada. Configuração rejeita rotas fora do escopo,
+queries, arrays e durações inválidas. Não foram necessários novos seletores nem
+testes de navegador para o cálculo de tempo; validação do novo orçamento no BTG
+depende da próxima coleta manual/CDP. Não afirmar completude antes de end_observed.
+
 ## Execução BTG 11 concluída nas cinco páginas — 2026-11-04
 
 Ao perguntar "e agora?", usuário já tinha executado a versão atual. Consulta

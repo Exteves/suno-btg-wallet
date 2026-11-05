@@ -46,7 +46,11 @@
   "scrollIdleMs": 10000,
   "scrollBottomSamples": 3,
   "maxScrollDurationMs": 300000,
+  "scrollDurationByPath": {
+    "/produtos-de-investimento/fundos-de-investimento": 900000
+  },
   "scrollNoProgressMs": 45000,
+  "scrollReloadAttempts": 1,
   "progressIntervalMs": 10000,
   "settleMs": 1000,
   "navigationTimeoutMs": 45000,

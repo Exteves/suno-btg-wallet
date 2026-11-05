@@ -116,6 +116,8 @@ export function scrubRequestDiagnostic(value) {
     origin_scope: ['application', 'provider', 'external', 'unknown'].includes(entry.origin_scope) ? entry.origin_scope : 'unknown',
   };
   if (Number.isInteger(entry.status) && entry.status >= 100 && entry.status <= 599) clean.status = entry.status;
+  if (Number.isSafeInteger(entry.ageMs) && entry.ageMs >= 0) clean.ageMs = entry.ageMs;
+  if (['awaiting_response', 'receiving_body'].includes(entry.stage)) clean.stage = entry.stage;
   if (['INVALID_STRUCTURE', 'TRANSACTION_FIELD', 'INVALID_VALUE', 'UNRECOGNIZED_FIELD', 'BODY_UNAVAILABLE'].includes(entry.query_check)) clean.query_check = entry.query_check;
   if (clean.query_check === 'UNRECOGNIZED_FIELD' && Array.isArray(entry.query_fields)) clean.query_fields = scrubQueryFields(entry.query_fields);
   if (['ERR_ABORTED', 'ERR_CONNECTION_REFUSED', 'ERR_NAME_NOT_RESOLVED', 'ERR_TIMED_OUT', 'ERR_FAILED', 'ERR_BLOCKED_BY_CLIENT',

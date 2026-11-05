@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, selectCollectionPaths } from '../src/config.js';
 import { Store } from '../src/database.js';
 import { classifyCategory, catalogProducts } from '../src/catalog.js';
 import { unsafeControlLabel, scopedUrl, maySend, sourceKind, discoverCatalogRoute, collectionPolicy } from '../src/policy.js';
@@ -74,10 +74,36 @@ test('collection configuration rejects malformed route lists, seeds outside the 
     { collectionPaths: ['https://other.test/renda-fixa'] }, { collectionPaths: ['/conta'] },
     { seedPaths: ['/produtos-de-investimento/criptoativos'] }, { followDiscoveredLinks: 'false' },
     { scrollIdleMs: 0 }, { scrollBottomSamples: 0 }, { maxScrollDurationMs: config.scrollIdleMs },
-    { scrollNoProgressMs: config.scrollIdleMs }, { progressIntervalMs: 0 }]) {
+    { scrollNoProgressMs: config.scrollIdleMs }, { progressIntervalMs: 0 },
+    { scrollDurationByPath: [] }, { scrollDurationByPath: 'PRIVATE' },
+    { scrollDurationByPath: { '/produtos-de-investimento/fundos-de-investimento': 0 } },
+    { scrollDurationByPath: { '/produtos-de-investimento/fundos-de-investimento': config.scrollIdleMs } },
+    { scrollDurationByPath: { '/produtos-de-investimento/fundos-de-investimento': 900000.5 } },
+    { scrollDurationByPath: { '/produtos-de-investimento/criptoativos': 900000 } },
+    { scrollDurationByPath: { '/produtos-de-investimento/fundos-de-investimento?token=PRIVATE': 900000 } },
+    { scrollReloadAttempts: -1 }, { scrollReloadAttempts: 1.5 }, { scrollReloadAttempts: 3 }, { scrollReloadAttempts: 'PRIVATE' }]) {
     await writeFile(path, JSON.stringify({ ...config, ...change }));
     await assert.rejects(loadConfig(path), error => !error.message.includes('PRIVATE'));
   }
+});
+
+test('only-path selects existing catalog seeds and narrows coverage without changing login or widening navigation', () => {
+  const funds = '/produtos-de-investimento/fundos-de-investimento';
+  const selected = selectCollectionPaths(config, [funds, funds]);
+  assert.deepEqual(selected.seedPaths, [funds]);
+  assert.deepEqual(selected.collectionPaths, [funds]);
+  assert.deepEqual(selected.expectedCategories, ['investment_funds']);
+  assert.equal(selected.maxPages, 1);
+  assert.equal(selected.entryPath, config.entryPath);
+  assert.equal(selected.loginPath, config.loginPath);
+  assert.equal(selected.scrollDurationByPath[funds], 900000);
+  assert.equal(config.seedPaths.length, 5);
+  assert.deepEqual(config.expectedCategories, ['fixed_income', 'investment_funds']);
+  assert.equal(scopedUrl('/produtos-de-investimento/renda-fixa', collectionPolicy(selected)), null);
+  for (const path of ['/produtos-de-investimento/criptoativos', '/conta', funds + '?token=PRIVATE', 'https://other.test' + funds]) {
+    assert.throws(() => selectCollectionPaths(config, [path]), error => !error.message.includes('PRIVATE'));
+  }
+  assert.throws(() => selectCollectionPaths({ ...config, provider: 'suno' }, [funds]));
 });
 
 test('the observed Produto e risco header identifies fixed-income rows while preserving its literal combined value', () => {

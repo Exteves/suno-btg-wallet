@@ -29,7 +29,7 @@ const messages = {
   CDP_MULTIPLE_CATALOGS: 'Há mais de uma aba do catálogo. Deixe somente a aba que deseja consultar na janela anônima do Chrome temporário.',
   HTTP_ERROR: 'O site respondeu com erro HTTP antes da coleta. Verifique o acesso no navegador.',
   CONFIG_INVALID: 'Configuração inválida. Verifique o arquivo de configuração da fonte e o README.',
-  CLI_USAGE: 'Uso Suno: npm run scrape -- --purpose start|rebalance [--no-session]. Uso BTG: npm run scrape:btg [-- --browser-channel chrome|msedge|chromium] [--diagnose-login]. Conexão manual: npm run btg:browser; depois npm run scrape:btg -- --cdp http://127.0.0.1:9222. Não combine CDP com opções de lançamento/login/diagnóstico, nem --browser-channel com --browser-path.',
+  CLI_USAGE: 'Uso Suno: npm run scrape -- --purpose start|rebalance [--no-session]. Uso BTG: npm run scrape:btg [-- --browser-channel chrome|msedge|chromium] [--diagnose-login]. Conexão manual: npm run btg:browser; depois npm run scrape:btg -- --cdp http://127.0.0.1:9222. Para repetir uma lista BTG use --only-path com um caminho já configurado. Não combine CDP com opções de lançamento/login/diagnóstico, nem --browser-channel com --browser-path.',
   UNEXPECTED_FAILURE: 'Falha na execução. Detalhes privados da página não foram registrados. Execute npm run doctor para verificar o ambiente.',
 };
 

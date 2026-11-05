@@ -4,7 +4,7 @@ import { stdin, stdout } from 'node:process';
 import { chromium } from 'playwright';
 import { Store } from './database.js';
 import { collect } from './crawler.js';
-import { loadConfig } from './config.js';
+import { loadConfig, selectCollectionPaths } from './config.js';
 import { privatePath } from './privacy.js';
 import { SecretServiceKeyring } from './keyring.js';
 import { SessionVault, filterSessionState } from './session-vault.js';
@@ -36,6 +36,7 @@ try {
     db: { type: 'string', default: 'privado/suno.sqlite' },
     'browser-path': { type: 'string' }, 'browser-channel': { type: 'string' },
     cdp: { type: 'string' },
+    'only-path': { type: 'string', multiple: true },
     'diagnose-login': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     login: { type: 'boolean' }, 'no-session': { type: 'boolean' }, 'forget-session': { type: 'boolean' },
   } });
@@ -44,9 +45,11 @@ try {
     console.log('Navegador: --browser-channel chrome|msedge|chromium OU --browser-path /caminho/chromium. Diagnóstico de carregamento: --diagnose-login.');
     console.log('Login Suno e sessão: npm run login | npm run session:forget. Diagnóstico do ambiente: npm run doctor.');
     console.log('Sessão BTG manual: npm run btg:browser; depois npm run scrape:btg -- --cdp http://127.0.0.1:9222.');
+    console.log('Repetir somente uma lista BTG: --only-path /produtos-de-investimento/fundos-de-investimento (opção repetível).');
   } else {
     if (!['suno', 'btg'].includes(values.source)) throw new AppError('CLI_USAGE');
     diagnoseLogin = !!values['diagnose-login'];
+    if (values['only-path'] && (values.source !== 'btg' || diagnoseLogin || values.login || values['forget-session'])) throw new AppError('CLI_USAGE');
     if (values.cdp) {
       localCdpEndpoint(values.cdp);
       if (values.source !== 'btg' || values.login || values['forget-session'] || diagnoseLogin || values['browser-path'] || values['browser-channel']) throw new AppError('CLI_USAGE');
@@ -73,6 +76,10 @@ try {
         config = await loadConfig(values.config || `${values.source}.config.json`);
         if (config.provider !== values.source) throw new Error();
       } catch { throw new AppError('CONFIG_INVALID'); }
+      if (values['only-path']) {
+        try { config = selectCollectionPaths(config, values['only-path']); }
+        catch { throw new AppError('CLI_USAGE'); }
+      }
       const dbPath = privatePath(values.db);
       const vault = persist ? new SessionVault(sessionPath, keyring, { ttlMs: config.sessionTtlHours * 3600000 }) : null;
       if (persist) await keyring.check();
@@ -150,7 +157,9 @@ try {
                   : progress.waitingForRequests ? 'aguardando consultas de produtos'
                   : progress.atBottom ? 'confirmando fim da lista' : 'percorrendo lista';
                 const records = progress.distinctProductRecords === undefined ? '' : `; ${progress.distinctProductRecords} registros distintos`;
-                console.log(`Execução ${runId}: página ${count}; ${Math.floor(progress.elapsedMs / 1000)}s; passo ${progress.step}${records}; ${state}.`);
+                console.log(`Execução ${runId}: página ${count}; ${Math.floor(progress.elapsedMs / 1000)}s (limite ${Math.floor(progress.timeLimitMs / 1000)}s); passo ${progress.step}${records}; ${state}.`);
+              } else if (progress.phase === 'scroll_reload') {
+                console.log(`Execução ${runId}: página ${count}; consulta sem progresso; recarregando a lista (${progress.attempt}/${progress.maxAttempts}). Dados anteriores preservados.`);
               } else if (progress.phase === 'page_end') {
                 console.log(`Execução ${runId}: página ${count} encerrada (${progress.status}); ${progress.distinctProductRecords} registros; ${progress.error || progress.scrollCompletion || 'sem rolagem'}.`);
               } else console.log(`Execução ${runId}: página ${count}; ${queued} na fila.`);

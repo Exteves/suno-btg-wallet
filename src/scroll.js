@@ -1,6 +1,16 @@
 import { maySend, requestOriginScope } from './policy.js';
 import { diagnosticPath, scrubRequestDiagnostic } from './privacy.js';
 
+export function scrollConfigForPage(config, rawUrl) {
+  try {
+    const url = new URL(rawUrl, config.baseUrl);
+    if (url.origin !== new URL(config.baseUrl).origin || url.username || url.password) return config;
+    const duration = config.scrollDurationByPath?.[url.pathname];
+    if (Number.isSafeInteger(duration) && duration > config.scrollIdleMs) return { ...config, maxScrollDurationMs: duration };
+  } catch { /* An unknown page keeps the baseline budget; it never widens scope. */ }
+  return config;
+}
+
 export async function scrollRenderedPage(page, config, { reset = false, advance = false } = {}) {
   return page.evaluate(({ config, reset, advance }) => {
     const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
@@ -51,27 +61,32 @@ export async function scrollRenderedPage(page, config, { reset = false, advance 
 
 // Track only allowed first-party data reads, in memory. Analytics POSTs and
 // aborted writes must not keep the list waiting forever. No payload is retained.
-export function watchCollectionLoads(page, config, onFailure = () => {}) {
+export function watchCollectionLoads(page, config, onFailure = () => {}, { now = Date.now } = {}) {
   const pending = new Set();
   const catalogPending = new Set();
+  const timing = new Map();
   const unauthorized = new Set();
+  let navigationExpected = false;
   const origin = new URL(config.baseUrl);
   const start = request => {
     try {
+      if (request.isNavigationRequest?.() && !request.frame().parentFrame()) navigationExpected = true;
       const url = new URL(request.url());
       const providerHost = config.provider === 'btg' && (url.hostname === 'btgpactual.com' || url.hostname.endsWith('.btgpactual.com'));
       if (['xhr', 'fetch'].includes(request.resourceType()) && (url.origin === origin.origin || providerHost) && maySend(request, config)) {
         pending.add(request);
+        timing.set(request, { started: now(), status: null });
         if (config.provider !== 'btg' || /^\/investments\/api\/(?:fixed-income|government-bond|treasury|fund-subscription|product-management)(?:\/|$)/.test(url.pathname)) catalogPending.add(request);
       }
     } catch { /* Unclassifiable requests cannot contribute to readiness. */ }
   };
-  const finish = request => { pending.delete(request); catalogPending.delete(request); };
+  const finish = request => { pending.delete(request); catalogPending.delete(request); timing.delete(request); };
   const diagnostic = request => ({ path: diagnosticPath(request.url()), method: request.method(),
     resource_type: request.resourceType(), origin_scope: requestOriginScope(request, config) });
   const response = response => {
     const request = response.request();
     const status = response.status();
+    if (timing.has(request)) timing.get(request).status = status;
     if (pending.has(request) && config.provider === 'btg') {
       const path = new URL(request.url()).pathname;
       if (/^\/investments\/api\/(?:fixed-income|government-bond|treasury|fund-subscription|product-management)(?:\/|$)/.test(path)) {
@@ -95,16 +110,58 @@ export function watchCollectionLoads(page, config, onFailure = () => {}) {
   page.on('requestfinished', finish);
   page.on('requestfailed', failed);
   page.on('response', response);
+  const reset = () => { pending.clear(); catalogPending.clear(); timing.clear(); };
+  const navigation = frame => {
+    // The collector navigates the main frame through read-only routes. Reads
+    // left over from its previous document cannot keep the new list busy.
+    if (!frame.parentFrame() && navigationExpected) { reset(); navigationExpected = false; }
+  };
+  page.on('framenavigated', navigation);
   return { isLoading: () => catalogPending.size > 0, pendingCount: () => catalogPending.size,
+    beginNavigation: () => { reset(); navigationExpected = true; },
+    pendingRequests: () => [...catalogPending].slice(0, 20).map(request => {
+      const state = timing.get(request);
+      return scrubRequestDiagnostic({ ...diagnostic(request), ageMs: Math.max(0, now() - (state?.started ?? now())),
+        stage: state?.status === null ? 'awaiting_response' : 'receiving_body',
+        ...(state?.status ? { status: state.status } : {}) });
+    }),
     requiresAuthentication: () => unauthorized.size > 0, detach: () => {
     page.off('request', start);
     page.off('requestfinished', finish);
     page.off('requestfailed', failed);
     page.off('response', response);
-    pending.clear();
-    catalogPending.clear();
+    page.off('framenavigated', navigation);
+    reset();
     unauthorized.clear();
   } };
+}
+
+// Retry a stalled page by letting its own frontend query again after reload.
+// The original time/step budgets cover all attempts, including the reload.
+// No request bodies are saved, reconstructed or replayed by this helper.
+export async function walkWithRecovery({ config, walk, reload, onRecovery = () => {}, now = Date.now }) {
+  const started = now();
+  let steps = 0;
+  let reloads = 0;
+  let result;
+  while (true) {
+    const remainingMs = config.maxScrollDurationMs - (now() - started);
+    const remainingSteps = config.maxScrollSteps - steps;
+    if (remainingMs <= 0 || remainingSteps <= 0) {
+      return { ...result, reason: remainingMs <= 0 ? 'time_limit' : 'step_limit', steps, elapsedMs: now() - started, reloads };
+    }
+    const offset = { elapsedMs: now() - started, steps };
+    result = await walk({ ...config, maxScrollDurationMs: remainingMs, maxScrollSteps: remainingSteps }, offset);
+    steps += result.steps;
+    const elapsedMs = now() - started;
+    const canReload = result.reason === 'loading_stalled' && reloads < (config.scrollReloadAttempts ?? 0)
+      && config.maxScrollDurationMs - elapsedMs > config.scrollIdleMs + config.settleMs
+      && steps < config.maxScrollSteps;
+    if (!canReload) return { ...result, steps, elapsedMs, reloads };
+    reloads++;
+    onRecovery({ attempt: reloads, maxAttempts: config.scrollReloadAttempts, elapsedMs, result });
+    await reload(Math.min(config.navigationTimeoutMs, config.maxScrollDurationMs - (now() - started)));
+  }
 }
 
 // Capture the initial viewport and every subsequent rendered window. A list's
@@ -138,7 +195,8 @@ export async function walkProgressiveList({ capture, scroll, wait, isLoading = (
     if (now() - lastProgress >= (config.progressIntervalMs ?? 10000)) {
       lastProgress = now();
       onProgress({ step: step + 1, elapsedMs, unchangedMs, atBottom: bottom, busy: !!state.busy,
-        waitingForRequests: loading, position: state.after, height: state.height, viewport: state.viewport });
+        waitingForRequests: loading, position: state.after, height: state.height, viewport: state.viewport,
+        timeLimitMs: config.maxScrollDurationMs });
     }
     if (bottom && !state.busy && !loading) {
       if (signature !== previous || quietSince === null) { quietSince = now(); bottomSamples = 1; }
