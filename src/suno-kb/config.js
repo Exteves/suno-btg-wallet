@@ -1,0 +1,27 @@
+import { readFile } from 'node:fs/promises';
+
+const positive = value => Number.isInteger(value) && value > 0;
+
+export async function loadDailyConfig(path) {
+  const config = JSON.parse(await readFile(path, 'utf8'));
+  const base = new URL(config.baseUrl);
+  if (base.origin !== 'https://investidor.suno.com.br' || base.pathname !== '/' || base.search || base.hash) throw new Error('baseUrl');
+  const route = value => typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && new URL(value, base).origin === base.origin
+    && new URL(value, base).pathname === value;
+  if (!route(config.authCheckPath) || !Array.isArray(config.sections) || !config.sections.length) throw new Error('sections');
+  const names = new Set();
+  for (const section of config.sections) {
+    if (typeof section.name !== 'string' || !section.name || names.has(section.name) || !route(section.path)
+      || (section.discoverPrefix !== undefined && (!route(section.discoverPrefix) || !section.discoverPrefix.endsWith('/')))) throw new Error('section');
+    names.add(section.name);
+  }
+  for (const key of ['maxPages', 'maxDiscoveredPerSection', 'maxLinkDepth', 'maxTabsPerPage', 'settleQuietMs', 'settleTimeoutMs',
+    'navigationTimeoutMs', 'authTimeoutMs', 'runTimeoutMinutes', 'sessionTtlHours']) if (!positive(config[key])) throw new Error(key);
+  if (config.sessionTtlHours > 168 || !Array.isArray(config.sessionLocalStorageKeys)) throw new Error('session');
+  const pagination = config.pagination;
+  if (!pagination || !Number.isInteger(pagination.delayMs) || pagination.delayMs < 200 || !pagination.maxPagesPerSeries
+    || !Object.values(pagination.maxPagesPerSeries).every(n => Number.isInteger(n) && n >= 0) || !('default' in pagination.maxPagesPerSeries)) throw new Error('pagination');
+  pagination.maxBulkItems ??= 2000;
+  if (!Number.isInteger(pagination.maxBulkItems) || pagination.maxBulkItems < 0) throw new Error('pagination');
+  return config;
+}

@@ -1,5 +1,8 @@
 # Coletor Suno → SQLite
 
+**Coleta diária agendada** de Relatórios, Carteiras, Cobertura e Fundos da Suno para
+uma base de conhecimento local: `npm run daily`. Veja [o guia](docs/SUNO-DIARIO.md).
+
 Também há coleta do catálogo BTG, com login manual e sessão temporária:
 `npm run scrape:btg`. Consulte [o guia do BTG](docs/BTG.md) para operação, configuração,
 limites de cobertura e o registro privado do objetivo de alocação. As duas fontes

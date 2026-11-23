@@ -1,0 +1,25 @@
+{
+  "baseUrl": "https://investidor.suno.com.br",
+  "authCheckPath": "/carteiras",
+  "sections": [
+    { "name": "relatorios", "path": "/relatorios" },
+    { "name": "carteiras", "path": "/carteiras", "discoverPrefix": "/carteiras/" },
+    { "name": "cobertura", "path": "/carteiras/cobertura-suno" },
+    { "name": "fundos", "path": "/nossos-fundos", "discoverPrefix": "/nossos-fundos/" }
+  ],
+  "maxPages": 80,
+  "maxDiscoveredPerSection": 40,
+  "maxLinkDepth": 3,
+  "maxTabsPerPage": 12,
+  "settleQuietMs": 2500,
+  "settleTimeoutMs": 30000,
+  "navigationTimeoutMs": 60000,
+  "authTimeoutMs": 45000,
+  "runTimeoutMinutes": 50,
+  "sessionTtlHours": 168,
+  "sessionLocalStorageKeys": [],
+  "pagination": {
+    "delayMs": 800,
+    "maxPagesPerSeries": { "report": 400, "wallet_event": 100, "coverage": 150, "default": 30 }
+  }
+}

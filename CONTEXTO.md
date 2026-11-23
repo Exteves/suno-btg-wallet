@@ -1,5 +1,39 @@
 # Contexto — 2026-11-02
 
+## Validação real da coleta diária — 2026-11-23
+
+Usuário fez login manual (via `--wait-login`). Execuções 1–3 revelaram e corrigiram:
+guarda bloqueava POST `v1/user/show-update-cpf` (flag; app redireciona carteiras a
+/error sem ele) — liberado só esse caminho; /relatorios usa `v2/search`; eventos
+ignoram page>1 mas aceitam limit (busca completa pelo total `count`); cobertura
+recusa limit grande (400) → fallback de páginas; ticker vinha aninhado em `assets`
+(corrigido + `--reindex`); UUID de carteira preservado na URL salva.
+Execução 4: captured, 0 issues, 12/12 páginas. Conferido contra totais da API:
+cobertura 131/131, eventos 13/13 carteiras (2.690), relatórios 5.813 na base vs
+5.810 no v2/search (2018-10 a hoje), fundos 8/8 (preço/DY/cota), 15 listas de
+carteiras com 260 posições; 14 listas sem acesso (has_access:false: ETFs intern.,
+Internacional, Small Caps). Backup pré-reindex em privado/run/. Conteúdo integral
+dos relatórios ainda não coletado.
+
+## Coleta diária Suno e base de conhecimento — 2026-11-23
+
+Pedido: agendar coleta diária de /relatorios, /carteiras, /carteiras/cobertura-suno
+e /nossos-fundos, acumulando uma base local. Criado `npm run daily` (src/daily.js,
+src/suno-kb/), banco `privado/suno-conhecimento.sqlite`, guia docs/SUNO-DIARIO.md.
+Endpoints mapeados dos bundles públicos (sem conta): gateway
+membros-api-gateway.suno.com.br/api/, auth via header x-auth + cookie refreshToken.
+Grava passivamente respostas JSON de uma lista de endpoints de conteúdo
+(reports v2 list, wallets/assets, wallets-events, coverage-universe, nossos-fundos…);
+endpoints pessoais nunca são gravados. Paginação por GET repetido (só page/offset).
+Login confirmado por resposta autorizada da API (sem Enter); sem sessão: TTY abre
+login manual, agendado sai com código 3. Headless é bloqueado pelo Cloudflare
+(testado 2026-11-23); com janela (WSLg) a página carrega. Timer systemd de usuário
+suno-daily.timer instalado às 19:30 com Persistent=true.
+Testes: 90 unitários + 10 de navegador sintéticos passaram. Execução real sem sessão
+retornou login_required corretamente. **Pendente:** primeiro login do usuário e
+validação dos formatos reais (issues SECTION_WITHOUT_DATA, endpoint_inventory
+unclassified); conteúdo integral dos relatórios ainda não coletado.
+
 ## Execução BTG 13: fundos com consulta pendente e recuperação limitada — 2026-11-05
 
 Usuário enviou run13 partial: crédito 666/end_observed, títulos 41/end_observed,
