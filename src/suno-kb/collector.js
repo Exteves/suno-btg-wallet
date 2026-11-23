@@ -52,6 +52,7 @@ export class ResponseRecorder {
     this.lastActivity = Date.now();
     this.authorizedOk = 0;
     this.authFailures = 0;
+    this.authHeaders = null;
     this.series = new Map();
     this.stats = { stored: 0, items: 0, failed: 0, ignored: 0 };
     this.ingestions = [];
@@ -79,7 +80,12 @@ export class ResponseRecorder {
     const method = request.method();
     // Proof of an authorized session: an authenticated gateway call succeeded.
     const hasAuth = !!(await within(request.headerValue('x-auth'), 5000, null));
-    if (hasAuth && status >= 200 && status < 300) this.authorizedOk++;
+    if (hasAuth && status >= 200 && status < 300) {
+      this.authorizedOk++;
+      // Latest working session headers, in memory only, for direct content GETs.
+      this.authHeaders = Object.fromEntries(Object.entries(await within(request.allHeaders(), 5000, {}))
+        .filter(([name]) => replayHeaderNames.has(name.toLowerCase())));
+    }
     if (hasAuth && status === 401) this.authFailures++;
     if (!this.enabled || method === 'OPTIONS') return;
     const classified = classifyEndpoint(request.url(), method);

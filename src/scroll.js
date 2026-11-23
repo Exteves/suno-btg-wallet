@@ -70,7 +70,7 @@ export function watchCollectionLoads(page, config, onFailure = () => {}, { now =
   const origin = new URL(config.baseUrl);
   const start = request => {
     try {
-      if (request.isNavigationRequest?.() && !request.frame().parentFrame()) navigationExpected = true;
+      if (request.isNavigationRequest?.() && (() => { try { return !request.frame().parentFrame(); } catch { return true; } })()) navigationExpected = true;
       const url = new URL(request.url());
       const providerHost = config.provider === 'btg' && (url.hostname === 'btgpactual.com' || url.hostname.endsWith('.btgpactual.com'));
       if (['xhr', 'fetch'].includes(request.resourceType()) && (url.origin === origin.origin || providerHost) && maySend(request, config)) {

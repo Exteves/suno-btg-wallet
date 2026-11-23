@@ -78,6 +78,17 @@ export class KnowledgeStore {
         id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL REFERENCES runs(id),
         at TEXT NOT NULL, code TEXT NOT NULL, detail TEXT NOT NULL
       );
+      -- Full content of each report (fetched once). JSON/HTML bodies go to blobs,
+      -- PDFs to files under privado/; extracted text is searchable in report_text.
+      CREATE TABLE IF NOT EXISTS report_contents (
+        report_key TEXT PRIMARY KEY, slug TEXT, type TEXT, format TEXT, status TEXT NOT NULL,
+        http_status INTEGER, attempts INTEGER NOT NULL DEFAULT 1, run_id INTEGER REFERENCES runs(id),
+        fetched_at TEXT NOT NULL, source_url TEXT, body_hash TEXT REFERENCES blobs(hash),
+        file_path TEXT, file_sha256 TEXT, file_size INTEGER, text_chars INTEGER, detail TEXT
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS report_text USING fts5(
+        report_key UNINDEXED, title, text, tokenize='unicode61 remove_diacritics 2'
+      );
       CREATE INDEX IF NOT EXISTS obs_date ON observations(kind, collection_date, scope_key);
       CREATE INDEX IF NOT EXISTS obs_ticker ON observations(ticker);
       CREATE INDEX IF NOT EXISTS items_ticker ON items(ticker);
@@ -92,6 +103,14 @@ export class KnowledgeStore {
         SELECT i.item_key, i.title, i.published, i.ticker, i.first_seen_at, i.last_seen_at,
                b.json AS data_json
         FROM items i JOIN blobs b ON b.hash=i.data_hash WHERE i.kind='report';
+
+      CREATE VIEW IF NOT EXISTS report_documents AS
+        SELECT r.item_key, r.title, r.published, json_extract(r.data_json, '$.type') AS type,
+               json_extract(r.data_json, '$.slug') AS slug, c.status AS content_status, c.format,
+               c.fetched_at, c.file_path, c.text_chars, b.json AS content_json,
+               (SELECT t.text FROM report_text t WHERE t.report_key=r.item_key) AS content_text
+        FROM reports r LEFT JOIN report_contents c ON c.report_key=r.item_key
+        LEFT JOIN blobs b ON b.hash=c.body_hash;
 
       CREATE VIEW IF NOT EXISTS daily_items AS
         SELECT o.collection_date, o.kind, o.scope_key, o.collection_path, o.item_key, o.item_index,
@@ -217,6 +236,8 @@ export class KnowledgeStore {
       if (collection.single) continue;
       const seen = new Set();
       collection.items.forEach((item, index) => {
+        // Report lists also carry upsell products (e.g. "Suno Black"): no id, not a report.
+        if (kind === 'report' && (item?.id === undefined || item?.id === null)) return;
         const info = describeItem(item, { preferTicker: !CUMULATIVE_KINDS.has(kind) });
         let key = info.key;
         // Duplicate keys inside one list (e.g. same ticker twice): keep both.
@@ -270,6 +291,46 @@ export class KnowledgeStore {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  // Reports whose content is still to be fetched, newest first. Failed fetches
+  // are retried up to maxAttempts; 'no_access' is retried once access appears.
+  pendingReportContents(limit, maxAttempts = 3) {
+    return this.db.prepare(`SELECT i.item_key, i.title, json_extract(b.json, '$.slug') AS slug, json_extract(b.json, '$.type') AS type,
+        json_extract(b.json, '$.user_metadata.has_access') AS has_access
+      FROM items i JOIN blobs b ON b.hash=i.data_hash LEFT JOIN report_contents c ON c.report_key=i.item_key
+      WHERE i.kind='report' AND (c.report_key IS NULL OR (c.status='error' AND c.attempts < ?)
+        OR (c.status='no_access' AND json_extract(b.json, '$.user_metadata.has_access') != 0))
+      ORDER BY coalesce(i.published, '') DESC, i.item_key DESC LIMIT ?`).all(maxAttempts, limit);
+  }
+
+  saveReportContent({ reportKey, slug, type, title, format = null, status, httpStatus = null, url = null, json, text, file, detail = null }) {
+    this.db.exec('BEGIN');
+    try {
+      const bodyHash = json === undefined ? null : this.blob(json);
+      this.db.prepare(`INSERT INTO report_contents(report_key, slug, type, format, status, http_status, run_id, fetched_at,
+          source_url, body_hash, file_path, file_sha256, file_size, text_chars, detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(report_key) DO UPDATE SET slug=excluded.slug, type=excluded.type, format=excluded.format,
+          status=excluded.status, http_status=excluded.http_status, attempts=attempts+1, run_id=excluded.run_id,
+          fetched_at=excluded.fetched_at, source_url=excluded.source_url, body_hash=excluded.body_hash,
+          file_path=excluded.file_path, file_sha256=excluded.file_sha256, file_size=excluded.file_size,
+          text_chars=excluded.text_chars, detail=excluded.detail`)
+        .run(reportKey, slug ?? null, type ?? null, format, status, httpStatus, this.runId ?? null, this.now().toISOString(), url,
+          bodyHash, file?.path ?? null, file?.sha256 ?? null, file?.size ?? null, text ? text.length : null, detail);
+      this.db.prepare('DELETE FROM report_text WHERE report_key=?').run(reportKey);
+      if (text) this.db.prepare('INSERT INTO report_text(report_key, title, text) VALUES (?, ?, ?)').run(reportKey, title ?? null, text);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  contentCounts() {
+    return Object.fromEntries(this.db.prepare(`SELECT coalesce(c.status, 'pendente') AS status, count(*) n
+      FROM items i LEFT JOIN report_contents c ON c.report_key=i.item_key WHERE i.kind='report' GROUP BY 1`).all()
+      .map(row => [row.status, row.n]));
   }
 
   counts() {

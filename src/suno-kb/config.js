@@ -23,5 +23,11 @@ export async function loadDailyConfig(path) {
     || !Object.values(pagination.maxPagesPerSeries).every(n => Number.isInteger(n) && n >= 0) || !('default' in pagination.maxPagesPerSeries)) throw new Error('pagination');
   pagination.maxBulkItems ??= 2000;
   if (!Number.isInteger(pagination.maxBulkItems) || pagination.maxBulkItems < 0) throw new Error('pagination');
+  // Report contents: a few hundred per daily run; `daily:conteudo` drains the backlog.
+  const content = config.content = { maxPerRun: 300, maxPerContentRun: 10000, contentRunTimeoutMinutes: 300, refreshMinutes: 15,
+    maxAttempts: 3, pdfDir: 'privado/relatorios/pdf', ...config.content };
+  for (const key of ['maxPerContentRun', 'contentRunTimeoutMinutes', 'refreshMinutes', 'maxAttempts']) if (!positive(content[key])) throw new Error(`content.${key}`);
+  if (!Number.isInteger(content.maxPerRun) || content.maxPerRun < 0) throw new Error('content.maxPerRun');
+  if (typeof content.pdfDir !== 'string' || !content.pdfDir.startsWith('privado/') || content.pdfDir.includes('..')) throw new Error('content.pdfDir');
   return config;
 }

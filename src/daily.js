@@ -14,7 +14,8 @@ import { AppError, classifyBrowserError, publicError } from './errors.js';
 import { loadDailyConfig } from './suno-kb/config.js';
 import { KnowledgeStore } from './suno-kb/store.js';
 import { classifyEndpoint } from './suno-kb/endpoints.js';
-import { ResponseRecorder, checkAuthenticated, collectSuno, onLoginPage } from './suno-kb/collector.js';
+import { ResponseRecorder, checkAuthenticated, collectSuno, installGuard, onLoginPage } from './suno-kb/collector.js';
+import { collectReportContents } from './suno-kb/content.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 process.umask(0o077);
@@ -58,12 +59,15 @@ try {
     'browser-path': { type: 'string' }, headless: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     'wait-login': { type: 'string' },
     reindex: { type: 'boolean' },
+    'content-only': { type: 'boolean' }, 'content-limit': { type: 'string' },
   } });
   if (values.help) {
     console.log('Uso: npm run daily [-- --full] [--db privado/suno-conhecimento.sqlite] [--config suno-daily.config.json]');
     console.log('--reindex recalcula itens e observações a partir das respostas brutas já gravadas (sem navegador).');
     console.log('--wait-login N espera até N minutos pelo login manual na janela, sem terminal interativo.');
     console.log('--full percorre novamente todas as páginas de relatórios e eventos, não só as novidades.');
+    console.log('--content-only baixa só o conteúdo pendente dos relatórios (carga inicial: npm run daily:conteudo).');
+    console.log('--content-limit N limita quantos conteúdos de relatório baixar nesta execução (0 desliga).');
     console.log('Sem sessão válida: em terminal interativo abre o login manual; agendado, termina com código 3.');
     process.exit(0);
   }
@@ -72,6 +76,10 @@ try {
   if (!Number.isInteger(waitLoginMinutes) || waitLoginMinutes < 0 || waitLoginMinutes > 30) throw new AppError('CLI_USAGE');
   let config;
   try { config = await loadDailyConfig(values.config); } catch { throw new AppError('CONFIG_INVALID'); }
+  const contentOnly = !!values['content-only'];
+  const contentLimit = values['content-limit'] !== undefined ? Number(values['content-limit'])
+    : contentOnly ? config.content.maxPerContentRun : config.content.maxPerRun;
+  if (!Number.isInteger(contentLimit) || contentLimit < 0) throw new AppError('CLI_USAGE');
   if (values.reindex) {
     // Offline: recomputes items/observations from stored raw responses.
     store = new KnowledgeStore(privatePath(values.db));
@@ -82,7 +90,7 @@ try {
   if (!releaseLock) { log('Outra coleta diária está em andamento.'); process.exitCode = EXIT.locked; }
   else {
     const runTimer = setTimeout(() => { log('Tempo máximo da execução atingido; encerrando o navegador.'); shuttingDown = true; void browser?.close().catch(() => {}); },
-      config.runTimeoutMinutes * 60000);
+      (contentOnly ? config.content.contentRunTimeoutMinutes : config.runTimeoutMinutes) * 60000);
     runTimer.unref();
     const keyring = new SecretServiceKeyring();
     await keyring.check();
@@ -99,6 +107,40 @@ try {
     const recorder = new ResponseRecorder({ store, full: !!values.full });
     recorder.attach(page);
     const sessionConfig = { baseUrl: config.baseUrl, sessionLocalStorageKeys: config.sessionLocalStorageKeys };
+
+    // Report contents: direct GETs with the session headers the page itself
+    // just used (memory only). Reopening /relatorios makes the app renew them.
+    const refreshAuth = async () => {
+      const before = recorder.authorizedOk;
+      try { await page.goto(new URL('/relatorios', config.baseUrl).href, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeoutMs }); }
+      catch { /* A redirect to login can interrupt the navigation. */ }
+      const start = Date.now();
+      while (Date.now() - start < config.authTimeoutMs && !shuttingDown) {
+        if (onLoginPage(page)) return false;
+        if (recorder.authorizedOk > before && recorder.authHeaders?.['x-auth']) return true;
+        await sleep(500);
+      }
+      return false;
+    };
+    const fetchContents = async limit => {
+      recorder.enabled = false;
+      if (!limit) return { stats: { pending: 0 } };
+      if (!recorder.authHeaders?.['x-auth'] && !(await refreshAuth())) return { stats: {}, authLost: true };
+      log(`Conteúdo dos relatórios: até ${limit} pendentes.`);
+      const result = await collectReportContents({
+        store, limit, refreshAuth, headers: () => recorder.authHeaders,
+        request: async (url, headers) => {
+          const response = await context.request.get(url, { headers, timeout: 120000, maxRedirects: 0, failOnStatusCode: false });
+          return { status: response.status(), contentType: response.headers()['content-type'] || '', body: await response.body() };
+        },
+        delayMs: config.pagination.delayMs, pdfDir: privatePath(config.content.pdfDir),
+        refreshEveryMs: config.content.refreshMinutes * 60000, maxAttempts: config.content.maxAttempts, shouldStop: () => shuttingDown,
+        onProgress: ({ index, total }) => { if (index % 100 === 1 || index === total) log(`[conteúdo] ${index}/${total}`); },
+      });
+      const { error = 0, attempted = 0 } = result.stats;
+      if (error > Math.max(3, attempted * 0.1)) store.issue('CONTENT_ERRORS', { error, attempted });
+      return result;
+    };
 
     let authenticated = await checkAuthenticated(page, recorder, config);
     if (!authenticated && waitLoginMinutes && !shuttingDown) {
@@ -127,6 +169,24 @@ try {
       store.finish('login_required', {});
       log('Login necessário: execute `npm run daily` em um terminal e autentique no navegador.');
       process.exitCode = EXIT.login;
+    } else if (contentOnly) {
+      await vault.save(filterSessionState(await context.storageState(), sessionConfig));
+      const runId = store.start(values.trigger);
+      log(`Execução ${runId}: somente conteúdo de relatórios.`);
+      await installGuard(context, config, (shape, method) => store.inventory(shape, method, 'blocked', null));
+      let content;
+      try { content = await fetchContents(contentLimit); }
+      catch (error) { if (!shuttingDown) throw error; content = { stats: {}, interrupted: true }; }
+      if (shuttingDown) content.interrupted = true;
+      const issues = store.db.prepare('SELECT count(*) n FROM issues WHERE run_id=?').get(runId).n;
+      // Not 'captured'/'partial': daily views must keep using the day's full collection.
+      const status = content.authLost || content.interrupted || issues ? 'content_partial' : 'content_ok';
+      const summary = { content: content.stats, contentTotals: store.contentCounts() };
+      store.finish(status, summary);
+      if (content.authLost) await vault.forget();
+      else await vault.save(filterSessionState(await context.storageState(), sessionConfig)).catch(() => {});
+      console.log(JSON.stringify({ runId, status, ...summary }, null, 2));
+      process.exitCode = content.authLost ? EXIT.login : status === 'content_ok' ? EXIT.captured : EXIT.partial;
     } else {
       await vault.save(filterSessionState(await context.storageState(), sessionConfig));
       log('Sessão confirmada por resposta autorizada da API e salva criptografada.');
@@ -141,12 +201,19 @@ try {
         result = { stats: {}, authLost: false, interrupted: true };
       }
       await recorder.flush();
+      let content = { stats: {} };
+      if (!result.authLost && !result.interrupted && !shuttingDown) {
+        try { content = await fetchContents(contentLimit); }
+        catch (error) { if (!shuttingDown) throw error; result.interrupted = true; }
+        if (content.authLost) result.authLost = true;
+        if (content.interrupted) result.interrupted = true;
+      }
       const issues = store.db.prepare('SELECT code, count(*) n FROM issues WHERE run_id=? GROUP BY code').all(runId)
         .map(row => ({ code: row.code, n: row.n }));
       const counts = store.counts();
       const status = !Object.keys(counts).length ? 'failed'
         : issues.length || result.interrupted || result.authLost ? 'partial' : 'captured';
-      const summary = { ...result.stats, responsesByKind: counts, items: recorder.stats.items, issues };
+      const summary = { ...result.stats, responsesByKind: counts, items: recorder.stats.items, content: content.stats, issues };
       store.finish(status, summary);
       if (result.authLost) await vault.forget();
       else await vault.save(filterSessionState(await context.storageState(), sessionConfig)).catch(() => {});

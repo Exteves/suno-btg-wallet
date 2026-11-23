@@ -101,9 +101,14 @@ function isCatalogGet(request, config) {
   } catch { return false; }
 }
 
+// Popup navigations have no frame yet (Playwright throws): treat them as top level.
+function isTopLevel(request) {
+  try { return !request.frame().parentFrame(); } catch { return true; }
+}
+
 export function maySend(request, config, categoryLabel = null) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
-    if (request.isNavigationRequest?.() && !request.frame().parentFrame() && !scopedUrl(request.url(), config)
+    if (request.isNavigationRequest?.() && isTopLevel(request) && !scopedUrl(request.url(), config)
       && !discoverCatalogRoute(request.url(), categoryLabel || '', config)) return false;
     // These exact catalog route shapes were blocked in run 6 by the broad
     // account/buy filter. Only data GETs are exempt; writes and navigations

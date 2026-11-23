@@ -1,5 +1,25 @@
 # Contexto — 2026-11-02
 
+## Conteúdo integral dos relatórios e operação contínua — 2026-11-23
+
+Primeira execução agendada (timer, 19:40) terminou captured. Mapeado, abrindo um
+relatório de cada tipo no navegador: e-reader/analysis → gateway
+`v1/reports/ereader/{slug}` (JSON em blocos); pdf → `v2/reports/view/{slug}` (PDF
+criptografado só contra cópia; o texto extraído é idêntico entre downloads e não
+tem nome/e-mail/CPF); html-content → `v2/reports/list?slug=`; edition (Radar FIIs)
+→ `api.sunocore.com.br/reports/api/public/editions/{slug}` (exige x-auth). O site
+tenta PUT `reports/{id}/read` e PATCH visualized: continuam bloqueados (nada marcado
+como lido). Conteúdo em `report_contents` + FTS5 `report_text`; PDFs em
+privado/relatorios/pdf/ (descartados se o texto tiver padrão de CPF). 300 por coleta
+diária; `npm run daily:conteudo` para a carga inicial (execuções content_ok/partial
+ficam fora de daily_runs). Item "Suno Black" (oferta, sem id) removido via reindex
+(backup privado/run/suno-conhecimento-antes-conteudo.sqlite). Guarda não quebra mais
+em navegação de popup sem frame. Operação: notificação Windows (ExecStopPost →
+src/daily-notify.js: login, falha, parcial, >48h sem dados), `npm run daily:status`,
+e tarefa do Windows "Suno - manter WSL ativo" (logon, conhost --headless wsl
+sleep infinity) criada com autorização do usuário. Não verificado: se o chaveiro
+fica desbloqueado após reiniciar o Windows.
+
 ## Validação real da coleta diária — 2026-11-23
 
 Usuário fez login manual (via `--wait-login`). Execuções 1–3 revelaram e corrigiram:

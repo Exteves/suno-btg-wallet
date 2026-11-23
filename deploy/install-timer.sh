@@ -19,6 +19,8 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory=$PROJECT
 ExecStart=$NODE $PROJECT/src/daily.js --trigger timer
+# Notificação no Windows quando a coleta pede login, falha, fica parcial ou atrasa.
+ExecStopPost=-$NODE $PROJECT/src/daily-notify.js
 # Cloudflare bloqueia o Chromium headless na Suno: a janela usa o WSLg.
 Environment=DISPLAY=${DISPLAY:-:0}
 Environment=WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}

@@ -21,5 +21,13 @@
   "pagination": {
     "delayMs": 800,
     "maxPagesPerSeries": { "report": 400, "wallet_event": 100, "coverage": 150, "default": 30 }
+  },
+  "content": {
+    "maxPerRun": 300,
+    "maxPerContentRun": 10000,
+    "contentRunTimeoutMinutes": 300,
+    "refreshMinutes": 15,
+    "maxAttempts": 3,
+    "pdfDir": "privado/relatorios/pdf"
   }
 }

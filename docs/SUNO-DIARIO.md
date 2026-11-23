@@ -1,7 +1,8 @@
 # Coleta diária Suno → base de conhecimento
 
-Coleta **somente leitura** de Relatórios, Carteiras (cada carteira e suas abas),
-Cobertura Suno e Nossos Fundos, uma vez por dia, em `privado/suno-conhecimento.sqlite`.
+Coleta **somente leitura** de Relatórios (lista e conteúdo integral), Carteiras
+(cada carteira e suas abas), Cobertura Suno e Nossos Fundos, uma vez por dia, em
+`privado/suno-conhecimento.sqlite`.
 
 ## Primeiro uso
 
@@ -16,7 +17,23 @@ ou rota. A primeira coleta percorre todo o histórico de relatórios; as seguint
 param assim que uma página só traz relatórios já conhecidos
 (`npm run daily:full` refaz o percurso completo).
 
-## Agendamento
+## Agendamento e como não esquecer
+
+Três peças, instaladas uma vez:
+
+1. `npm run schedule:install [-- HH:MM]`: timer systemd (abaixo).
+2. `npm run schedule:windows`: tarefa "Suno - manter WSL ativo" no Agendador de
+   Tarefas do Windows. No logon ela inicia o WSL sem janela e o mantém ativo, para
+   o timer rodar sem terminal aberto. Remover: `npm run schedule:windows -- remover`.
+3. Notificação do Windows após cada execução agendada (`src/daily-notify.js`):
+   login necessário, falha, coleta parcial ou mais de 48 h sem coleta com dados.
+   Execuções sem problema não notificam.
+
+`npm run daily:status` mostra as últimas coletas, o atraso, o conteúdo pendente,
+o próximo horário, a tarefa do Windows e a validade local da sessão.
+
+Não verificado: se o chaveiro do Linux continua desbloqueado depois de reiniciar o
+Windows. Se não continuar, a coleta falha e a notificação avisa.
 
 `npm run schedule:install [-- HH:MM]` instala um timer systemd de usuário
 (padrão 19:30, após o fechamento do mercado). `Persistent=true`: se o WSL estava
@@ -63,6 +80,36 @@ investir…) e links fora das quatro seções não são acionados.
 Opções: `--wait-login N` espera o login na janela sem terminal interativo;
 `npm run daily:reindex` recalcula itens/observações a partir das respostas brutas.
 
+## Conteúdo dos relatórios
+
+Cada relatório da lista tem um `type`; o conteúdo vem do mesmo endpoint que o
+leitor do site usa (mapeado em 2026-11-23):
+
+| type | Endpoint | Guardado |
+| --- | --- | --- |
+| `e-reader`, `analysis` | gateway `v1/reports/ereader/{slug}` | JSON em blocos |
+| `pdf` | gateway `v2/reports/view/{slug}` | arquivo em `privado/relatorios/pdf/` + texto (`pdftotext`) |
+| `html-content` | gateway `v2/reports/list?slug={slug}` | o relatório com o HTML |
+| `edition` (Radar FIIs) | `api.sunocore.com.br/reports/api/public/editions/{slug}` | JSON da edição |
+
+São GETs diretos com os cabeçalhos da sessão mantidos em memória, um a cada 0,8 s;
+a página `/relatorios` é reaberta a cada 15 min (ou num 401) para o app renovar o
+token. O site tenta marcar o relatório como lido (PUT/PATCH); isso fica bloqueado.
+Cada coleta diária baixa até 300 pendentes, do mais novo ao mais antigo;
+`npm run daily:conteudo` baixa todos de uma vez (carga inicial, horas). Essas
+execuções ficam com status `content_ok`/`content_partial`, fora das views diárias.
+Sem acesso (`has_access:false`) vira `no_access` e é refeito quando o acesso aparece;
+erros são refeitos até 3 vezes. Um PDF cujo texto tenha padrão de CPF não é guardado
+(fica só o texto, mascarado). Um relatório é baixado uma vez; edições posteriores da
+Suno no mesmo relatório não são rebaixadas.
+
+```sql
+-- Busca por texto (sem acento, sem maiúsculas)
+SELECT d.title, d.published, snippet(report_text, 2, '[', ']', '…', 12)
+FROM report_text JOIN report_documents d ON d.item_key=report_text.report_key
+WHERE report_text MATCH 'taee11 OR taesa' ORDER BY d.published DESC LIMIT 20;
+```
+
 ## Tabelas e views
 
 | Objeto | Conteúdo |
@@ -72,6 +119,8 @@ Opções: `--wait-login N` espera o login na janela sem terminal interativo;
 | `items` / `item_revisions` | catálogo cumulativo: primeira/última vez visto, cada versão |
 | `observations` | estado diário de listas (carteiras, cobertura, fundos) |
 | `reports` | relatórios acumulados |
+| `report_contents`, `report_text` | conteúdo de cada relatório (status, arquivo, JSON) e texto pesquisável (FTS5) |
+| `report_documents` | relatório + status do conteúdo + JSON + texto |
 | `wallet_positions`, `coverage_daily`, `funds_daily` | estado de cada dia (última execução do dia) |
 | `composition_changes` | ativos que entraram/saíram entre dias coletados |
 | `pages`, `page_texts` | rotas visitadas e texto renderizado |
@@ -89,7 +138,6 @@ SELECT title, published, first_seen_at FROM reports ORDER BY first_seen_at DESC 
 
 - O JSON é sempre guardado inteiro; `ticker`/`title` são extraídos por
   heurística (renda fixa não tem ticker). Ao mudar a heurística, rode `daily:reindex`.
-- O conteúdo integral dos relatórios (leitor/PDF) ainda não é baixado; só a lista
-  e seus metadados.
+- O texto dos PDFs vem do `pdftotext`; tabelas e gráficos em imagem não viram texto.
 - Carteiras sem assinatura podem redirecionar (`PAGE_REDIRECTED`).
 - Valores ficam como a API envia; nada é convertido ou inventado.

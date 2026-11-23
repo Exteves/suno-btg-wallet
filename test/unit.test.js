@@ -36,6 +36,10 @@ test('request guard allows explicit GraphQL queries and denies mutations, persis
   assert.equal(isQueryBody({ extensions: { persistedQuery: { hash: 'x' } } }), false);
   assert.equal(maySend(request('DELETE'), config), false);
   assert.equal(maySend(request('GET', null, `${config.baseUrl}/portfolio/excluir`), config), false);
+  // A popup navigation has no frame yet: Playwright throws, the guard must still decide.
+  const popup = url => ({ method: () => 'GET', url: () => url, isNavigationRequest: () => true, frame: () => { throw new Error('no frame'); } });
+  assert.equal(maySend(popup('https://other.test/'), config), false);
+  assert.equal(maySend(popup(`${config.baseUrl}/carteiras`), config), true);
 });
 
 test('SQLite snapshots are transactional, deduplicated per view, historical and private', () => {
