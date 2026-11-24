@@ -231,6 +231,7 @@ export class KnowledgeStore {
     const scope = CUMULATIVE_KINDS.has(kind) && kind !== 'wallet_event' ? 'all' : scopeOf(classified);
     const keys = [];
     const freshKeys = [];
+    let latestPublished = null;
     for (const collection of collections) {
       // Single-object responses are kept raw; only lists become items.
       if (collection.single) continue;
@@ -246,6 +247,7 @@ export class KnowledgeStore {
         const itemScope = collections.length > 1 && !CUMULATIVE_KINDS.has(kind) ? `${scope}|${collection.path}` : scope;
         const hash = this.blob(item);
         keys.push(key);
+        if (info.published && (!latestPublished || info.published > latestPublished)) latestPublished = info.published;
         if (!this.db.prepare('SELECT 1 FROM items WHERE kind=? AND scope_key=? AND item_key=? AND first_run_id<?')
           .get(kind, itemScope, key, runId)) freshKeys.push(key);
         this.db.prepare(`INSERT INTO items(kind, item_key, scope_key, title, ticker, published, first_seen_at, first_run_id,
@@ -265,7 +267,7 @@ export class KnowledgeStore {
         }
       });
     }
-    return { itemCount, keys, freshKeys };
+    return { itemCount, keys, freshKeys, latestPublished };
   }
 
   // Rebuilds items/observations from the stored raw responses, e.g. after the
@@ -295,13 +297,13 @@ export class KnowledgeStore {
 
   // Reports whose content is still to be fetched, newest first. Failed fetches
   // are retried up to maxAttempts; 'no_access' is retried once access appears.
-  pendingReportContents(limit, maxAttempts = 3) {
+  pendingReportContents(limit, maxAttempts = 3, since = null) {
     return this.db.prepare(`SELECT i.item_key, i.title, json_extract(b.json, '$.slug') AS slug, json_extract(b.json, '$.type') AS type,
         json_extract(b.json, '$.user_metadata.has_access') AS has_access
       FROM items i JOIN blobs b ON b.hash=i.data_hash LEFT JOIN report_contents c ON c.report_key=i.item_key
-      WHERE i.kind='report' AND (c.report_key IS NULL OR (c.status='error' AND c.attempts < ?)
+      WHERE i.kind='report' AND (? IS NULL OR i.published >= ?) AND (c.report_key IS NULL OR (c.status='error' AND c.attempts < ?)
         OR (c.status='no_access' AND json_extract(b.json, '$.user_metadata.has_access') != 0))
-      ORDER BY coalesce(i.published, '') DESC, i.item_key DESC LIMIT ?`).all(maxAttempts, limit);
+      ORDER BY coalesce(i.published, '') DESC, i.item_key DESC LIMIT ?`).all(since, since, maxAttempts, limit);
   }
 
   saveReportContent({ reportKey, slug, type, title, format = null, status, httpStatus = null, url = null, json, text, file, detail = null }) {
@@ -327,9 +329,10 @@ export class KnowledgeStore {
     }
   }
 
-  contentCounts() {
+  contentCounts(since = null) {
     return Object.fromEntries(this.db.prepare(`SELECT coalesce(c.status, 'pendente') AS status, count(*) n
-      FROM items i LEFT JOIN report_contents c ON c.report_key=i.item_key WHERE i.kind='report' GROUP BY 1`).all()
+      FROM items i LEFT JOIN report_contents c ON c.report_key=i.item_key
+      WHERE i.kind='report' AND (c.report_key IS NOT NULL OR ? IS NULL OR i.published >= ?) GROUP BY 1`).all(since, since)
       .map(row => [row.status, row.n]));
   }
 

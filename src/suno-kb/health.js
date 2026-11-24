@@ -5,7 +5,7 @@ import { existsSync, statSync } from 'node:fs';
 
 export const STALE_HOURS = 48;
 
-export function readHealth(dbPath, { now = new Date() } = {}) {
+export function readHealth(dbPath, { now = new Date(), since = null } = {}) {
   if (!existsSync(dbPath)) return { exists: false };
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
@@ -17,7 +17,8 @@ export function readHealth(dbPath, { now = new Date() } = {}) {
     let content = null;
     try {
       content = Object.fromEntries(db.prepare(`SELECT coalesce(c.status, 'pendente') AS status, count(*) n
-        FROM items i LEFT JOIN report_contents c ON c.report_key=i.item_key WHERE i.kind='report' GROUP BY 1`).all()
+        FROM items i LEFT JOIN report_contents c ON c.report_key=i.item_key
+        WHERE i.kind='report' AND (c.report_key IS NOT NULL OR ? IS NULL OR i.published >= ?) GROUP BY 1`).all(since, since)
         .map(row => [row.status, row.n]));
     } catch { /* Database from before report contents existed. */ }
     const totals = Object.fromEntries(['reports', 'wallet_positions', 'coverage_daily', 'funds_daily'].map(view => {

@@ -14,7 +14,7 @@ const statusLabel = { captured: 'completa', partial: 'parcial', failed: 'falhou'
   content_ok: 'conteúdo ok', content_partial: 'conteúdo parcial' };
 
 const config = await loadDailyConfig('suno-daily.config.json');
-const health = readHealth(privatePath('privado/suno-conhecimento.sqlite'));
+const health = readHealth(privatePath('privado/suno-conhecimento.sqlite'), { since: config.reportsSince });
 if (!health.exists) { console.log('Base ainda não criada: rode "npm run daily".'); process.exit(0); }
 
 console.log('Coletas recentes');
@@ -34,7 +34,7 @@ if (health.content) {
   const parts = order.filter(k => c[k]).map(k => `${c[k]} ${names[k]}`);
   const pdfDir = privatePath(config.content.pdfDir);
   const pdfBytes = existsSync(pdfDir) ? readdirSync(pdfDir).reduce((sum, f) => sum + statSync(join(pdfDir, f)).size, 0) : 0;
-  console.log(`Conteúdo dos relatórios: ${parts.join(', ')}. PDFs ${mb(pdfBytes)}.`);
+  console.log(`Conteúdo dos relatórios${config.reportsSince ? ` (pendentes só a partir de ${config.reportsSince})` : ''}: ${parts.join(', ')}. PDFs ${mb(pdfBytes)}.`);
   if (c.pendente > config.content.maxPerRun) console.log(`  Carga inicial: "npm run daily:conteudo" baixa os pendentes de uma vez (senão, ${config.content.maxPerRun} por dia).`);
 }
 

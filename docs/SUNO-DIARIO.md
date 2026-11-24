@@ -82,6 +82,12 @@ Opções: `--wait-login N` espera o login na janela sem terminal interativo;
 
 ## Conteúdo dos relatórios
 
+**Data de corte:** `reportsSince` (hoje `2026-11-23`, a pedido do usuário). Relatórios
+publicados antes dela não têm o conteúdo baixado, e a paginação da lista para na
+primeira página que só traz relatórios anteriores (inclusive com `--full`). A
+primeira página que o site carrega sozinho ainda pode trazer alguns antigos, que
+ficam só na lista. `"reportsSince": null` volta a cobrir todo o histórico.
+
 Cada relatório da lista tem um `type`; o conteúdo vem do mesmo endpoint que o
 leitor do site usa (mapeado em 2026-11-23):
 
@@ -96,7 +102,7 @@ São GETs diretos com os cabeçalhos da sessão mantidos em memória, um a cada 
 a página `/relatorios` é reaberta a cada 15 min (ou num 401) para o app renovar o
 token. O site tenta marcar o relatório como lido (PUT/PATCH); isso fica bloqueado.
 Cada coleta diária baixa até 300 pendentes, do mais novo ao mais antigo;
-`npm run daily:conteudo` baixa todos de uma vez (carga inicial, horas). Essas
+`npm run daily:conteudo` baixa todos os pendentes de uma vez. Essas
 execuções ficam com status `content_ok`/`content_partial`, fora das views diárias.
 Sem acesso (`has_access:false`) vira `no_access` e é refeito quando o acesso aparece;
 erros são refeitos até 3 vezes. Um PDF cujo texto tenha padrão de CPF não é guardado

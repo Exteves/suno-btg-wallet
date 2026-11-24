@@ -109,6 +109,7 @@ export class ResponseRecorder {
       if (!current) {
         this.series.set(info.seriesKey, { url: request.url(), info, headers, classified, lastCount: result.itemCount,
           keys: new Set(result.keys), fresh: result.freshKeys.length, route: this.route, done: false, total: result.total,
+          lastLatest: result.latestPublished,
           firstPosition: info.position });
       } else {
         result.keys.forEach(key => current.keys.add(key));
@@ -116,7 +117,7 @@ export class ResponseRecorder {
         current.fresh += result.freshKeys.length;
         current.total ??= result.total;
         current.firstPosition = Math.min(current.firstPosition, info.position);
-        if (info.position > current.info.position) Object.assign(current, { url: request.url(), info, lastCount: result.itemCount });
+        if (info.position > current.info.position) Object.assign(current, { url: request.url(), info, lastCount: result.itemCount, lastLatest: result.latestPublished });
       }
     }
   }
@@ -214,7 +215,7 @@ async function pageText(page) {
   }).catch(() => null);
 }
 
-async function paginate(fetchPage, recorder, store, config, issue) {
+export async function paginate(fetchPage, recorder, store, config, issue) {
   const summary = { series: 0, requests: 0, capped: 0 };
   for (const series of recorder.series.values()) {
     if (series.done) continue;
@@ -250,7 +251,11 @@ async function paginate(fetchPage, recorder, store, config, issue) {
     // Some lists ignore the page parameter past the second page (wallet
     // events, verified 2026-11-23) but honour a larger size: ask once for all.
     const total = series.total;
-    if (total && total > Math.max(series.keys.size, cumulative && !filtered ? store.knownCount(kind, scopeKey) : 0)
+    // Older reports are not wanted: pages are sorted newest first, stop at the cutoff.
+    const since = kind === 'report' ? config.reportsSince : null;
+    const beforeCutoff = result => since && (!result.latestPublished || result.latestPublished < since);
+    if (beforeCutoff({ latestPublished: series.lastLatest })) continue;
+    if (!since && total && total > Math.max(series.keys.size, cumulative && !filtered ? store.knownCount(kind, scopeKey) : 0)
       && total <= config.pagination.maxBulkItems) {
       const target = bulkUrl(url, info, total, info.pageKey ? Math.min(series.firstPosition, 1) : 0);
       const classified = classifyEndpoint(target, 'GET');
@@ -274,6 +279,7 @@ async function paginate(fetchPage, recorder, store, config, issue) {
       if (result.keys.every(key => series.keys.has(key))) break;
       result.keys.forEach(key => series.keys.add(key));
       if (cumulative && !recorder.full && !result.freshKeys.length) break;
+      if (beforeCutoff(result)) break;
       url = next;
       info = paginationOf(next);
       lastCount = result.itemCount;
@@ -281,7 +287,7 @@ async function paginate(fetchPage, recorder, store, config, issue) {
     // Daily lists must be whole; cumulative ones may stop early by design.
     const known = cumulative && !filtered ? store.knownCount(kind, scopeKey) : series.keys.size;
     // Reports stop early once nothing is new; they are checked against the catalog instead.
-    if (total && (!filtered || recorder.full) && Math.max(known, series.keys.size) < total)
+    if (total && !since && (!filtered || recorder.full) && Math.max(known, series.keys.size) < total)
       issue('PAGINATION_INCOMPLETE', { template: series.classified.template, collected: Math.max(known, series.keys.size), total });
   }
   return summary;

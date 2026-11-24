@@ -133,7 +133,7 @@ try {
           const response = await context.request.get(url, { headers, timeout: 120000, maxRedirects: 0, failOnStatusCode: false });
           return { status: response.status(), contentType: response.headers()['content-type'] || '', body: await response.body() };
         },
-        delayMs: config.pagination.delayMs, pdfDir: privatePath(config.content.pdfDir),
+        delayMs: config.pagination.delayMs, pdfDir: privatePath(config.content.pdfDir), since: config.reportsSince,
         refreshEveryMs: config.content.refreshMinutes * 60000, maxAttempts: config.content.maxAttempts, shouldStop: () => shuttingDown,
         onProgress: ({ index, total }) => { if (index % 100 === 1 || index === total) log(`[conteúdo] ${index}/${total}`); },
       });
@@ -177,14 +177,15 @@ try {
       let content;
       try { content = await fetchContents(contentLimit); }
       catch (error) { if (!shuttingDown) throw error; content = { stats: {}, interrupted: true }; }
+      await recorder.flush();
       if (shuttingDown) content.interrupted = true;
       const issues = store.db.prepare('SELECT count(*) n FROM issues WHERE run_id=?').get(runId).n;
       // Not 'captured'/'partial': daily views must keep using the day's full collection.
       const status = content.authLost || content.interrupted || issues ? 'content_partial' : 'content_ok';
-      const summary = { content: content.stats, contentTotals: store.contentCounts() };
+      const summary = { content: content.stats, contentTotals: store.contentCounts(config.reportsSince) };
       store.finish(status, summary);
       if (content.authLost) await vault.forget();
-      else await vault.save(filterSessionState(await context.storageState(), sessionConfig)).catch(() => {});
+      else if (!shuttingDown) await context.storageState().then(state => vault.save(filterSessionState(state, sessionConfig))).catch(() => {});
       console.log(JSON.stringify({ runId, status, ...summary }, null, 2));
       process.exitCode = content.authLost ? EXIT.login : status === 'content_ok' ? EXIT.captured : EXIT.partial;
     } else {
@@ -216,7 +217,7 @@ try {
       const summary = { ...result.stats, responsesByKind: counts, items: recorder.stats.items, content: content.stats, issues };
       store.finish(status, summary);
       if (result.authLost) await vault.forget();
-      else await vault.save(filterSessionState(await context.storageState(), sessionConfig)).catch(() => {});
+      else if (!shuttingDown) await context.storageState().then(state => vault.save(filterSessionState(state, sessionConfig))).catch(() => {});
       console.log(JSON.stringify({ runId, date: store.date, status, ...summary }, null, 2));
       process.exitCode = result.authLost ? EXIT.login : EXIT[status];
     }

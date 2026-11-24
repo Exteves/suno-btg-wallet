@@ -120,10 +120,10 @@ export async function parseContent(format, { body, contentType }, { reportKey, s
 // Downloads pending report contents, newest first, at a fixed pace.
 // request(url, headers) → { status, contentType, body: Buffer }.
 // refreshAuth() makes the app renew its token (headers() then returns it).
-export async function collectReportContents({ store, request, headers, refreshAuth, limit, delayMs, pdfDir,
+export async function collectReportContents({ store, request, headers, refreshAuth, limit, delayMs, pdfDir, since = null,
   refreshEveryMs = 15 * 60000, maxAttempts = 3, onProgress = () => {}, extractPdf, shouldStop = () => false, now = Date.now }) {
   const stats = { attempted: 0, ok: 0, no_access: 0, unsupported: 0, unavailable: 0, error: 0, bytes: 0 };
-  const pending = store.pendingReportContents(limit, maxAttempts);
+  const pending = store.pendingReportContents(limit, maxAttempts, since);
   stats.pending = pending.length;
   let lastRefresh = now();
   for (const report of pending) {

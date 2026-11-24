@@ -7,6 +7,7 @@ import { loadDailyConfig } from '../src/suno-kb/config.js';
 import { contentSource, htmlToText, jsonText, parseContent, collectReportContents } from '../src/suno-kb/content.js';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { notificationFor } from '../src/suno-kb/health.js';
+import { paginate } from '../src/suno-kb/collector.js';
 import { toastScript } from '../src/windows-notify.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -214,4 +215,40 @@ test('notificação só quando a coleta agendada precisa de atenção', () => {
   assert.match(notificationFor('0', { stale: true, hoursSinceData: 75 }).message, /3 dia/);
   // Texts are quoted for PowerShell: a single quote cannot end the string.
   assert.ok(toastScript("a'b", 'c\nd').includes("'a''b'") && toastScript('x', 'c\nd').includes("'c d'"));
+});
+
+test('relatórios anteriores à data de corte: sem conteúdo e sem paginação', async () => {
+  const store = new KnowledgeStore(':memory:', { now: () => new Date('2026-11-24T22:00:00Z') });
+  store.start('timer');
+  const r = store.ingest({ classified: classifyEndpoint(gw('v2/reports/v2/list?per_page=2&page=0')), url: 'u', status: 200, via: 'page', body: [
+    { id: 10, title: 'Novo', slug: 'novo', type: 'e-reader', published_at: '2026-11-24T11:00:00Z', user_metadata: { has_access: true } },
+    { id: 9, title: 'Antigo', slug: 'antigo', type: 'e-reader', published_at: '2026-11-20T11:00:00Z', user_metadata: { has_access: true } },
+  ] });
+  assert.equal(r.latestPublished.slice(0, 10), '2026-11-24');
+  assert.deepEqual(store.pendingReportContents(10, 3, '2026-11-23').map(x => x.item_key), ['10']);
+  assert.equal(store.pendingReportContents(10, 3).length, 2);
+  assert.deepEqual(store.contentCounts('2026-11-23'), { pendente: 1 });
+  store.close();
+  const config = await loadDailyConfig('suno-daily.config.json');
+  assert.match(config.reportsSince, /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test('paginação de relatórios para na data de corte', async () => {
+  const store = new KnowledgeStore(':memory:', { now: () => new Date('2026-11-24T22:00:00Z') });
+  store.start('timer');
+  const url = gw('v2/reports/v2/list?per_page=2&page=0');
+  const page = n => [{ id: 100 - 2 * n, published_at: `2026-11-${24 - 2 * n}T11:00:00Z` }, { id: 99 - 2 * n, published_at: `2026-11-${23 - 2 * n}T11:00:00Z` }];
+  const requested = [];
+  const fetchPage = async target => { const n = Number(new URL(target).searchParams.get('page')); requested.push(n);
+    return { status: () => 200, json: async () => page(n) }; };
+  const config = { reportsSince: '2026-11-23', navigationTimeoutMs: 1000, pagination: { delayMs: 0, maxBulkItems: 0, maxPagesPerSeries: { default: 50 } } };
+  const series = (lastLatest, fresh = 2) => ({ url, info: paginationOf(url), headers: {}, classified: classifyEndpoint(url), lastCount: 2,
+    keys: new Set(['100', '99']), fresh, total: null, lastLatest, firstPosition: 0, done: false });
+  const recorder = { full: false, stats: { stored: 0, items: 0 }, series: new Map([['s', series('2026-11-24T11:00:00Z')]]) };
+  await paginate(fetchPage, recorder, store, config, () => {});
+  assert.deepEqual(requested, [1]);   // page 1 is already before the cutoff: stop
+  recorder.series = new Map([['s', series('2026-11-20T11:00:00Z')]]);
+  await paginate(fetchPage, recorder, store, config, () => {});
+  assert.deepEqual(requested, [1]);   // the page itself loaded only old reports: no paging
+  store.close();
 });

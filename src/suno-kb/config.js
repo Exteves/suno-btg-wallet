@@ -23,6 +23,11 @@ export async function loadDailyConfig(path) {
     || !Object.values(pagination.maxPagesPerSeries).every(n => Number.isInteger(n) && n >= 0) || !('default' in pagination.maxPagesPerSeries)) throw new Error('pagination');
   pagination.maxBulkItems ??= 2000;
   if (!Number.isInteger(pagination.maxBulkItems) || pagination.maxBulkItems < 0) throw new Error('pagination');
+  // Reports older than this date (YYYY-MM-DD, published) are not wanted: lists stop
+  // paging there and their content is not downloaded.
+  if (config.reportsSince !== undefined && (typeof config.reportsSince !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(config.reportsSince)
+    || Number.isNaN(Date.parse(config.reportsSince)))) throw new Error('reportsSince');
+  config.reportsSince ??= null;
   // Report contents: a few hundred per daily run; `daily:conteudo` drains the backlog.
   const content = config.content = { maxPerRun: 300, maxPerContentRun: 10000, contentRunTimeoutMinutes: 300, refreshMinutes: 15,
     maxAttempts: 3, pdfDir: 'privado/relatorios/pdf', ...config.content };

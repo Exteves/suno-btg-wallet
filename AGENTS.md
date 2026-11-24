@@ -5,6 +5,9 @@ investimento do BTG, mantendo a origem de cada dado.
 Somente consulta: nunca comprar, vender, enviar ordens, transferir recursos ou
 alterar carteira/configurações. Distinguir posições pessoais de recomendações.
 Registrar fontes, datas e incertezas. Não inventar saldos, cotações ou disponibilidade.
+Relatórios Suno: o usuário só quer os publicados a partir de 2026-11-23
+(`reportsSince` em suno-daily.config.json). Não baixar histórico anterior
+(listas ou conteúdo) sem pedido explícito.
 
 Manter contexto nesta pasta, sem memória ou skills globais. Dados financeiros
 pessoais somente em `privado/`, fora do versionamento. Nunca gravar senhas,

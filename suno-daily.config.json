@@ -18,6 +18,7 @@
   "runTimeoutMinutes": 50,
   "sessionTtlHours": 168,
   "sessionLocalStorageKeys": [],
+  "reportsSince": "2026-11-23",
   "pagination": {
     "delayMs": 800,
     "maxPagesPerSeries": { "report": 400, "wallet_event": 100, "coverage": 150, "default": 30 }

@@ -1,5 +1,14 @@
 # Contexto — 2026-11-02
 
+## Data de corte dos relatórios — 2026-11-23
+
+Usuário: não precisa dos relatórios anteriores, só a partir de hoje.
+`reportsSince: "2026-11-23"` na config (regra também em AGENTS.md): sem download de
+conteúdo anterior e paginação de relatórios para no corte. A carga histórica
+(execução 8) foi interrompida após ~430 conteúdos antigos (fechamento da sessão);
+eles e a lista histórica (5.812) continuam na base — apagar só se o usuário pedir.
+Execução interrompida ficava 'failed' por storageState após fechar o navegador; corrigido.
+
 ## Conteúdo integral dos relatórios e operação contínua — 2026-11-23
 
 Primeira execução agendada (timer, 19:40) terminou captured. Mapeado, abrindo um

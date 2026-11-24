@@ -7,7 +7,8 @@ import { loadDailyConfig } from '../src/suno-kb/config.js';
 
 // Synthetic site and gateway via Playwright interception: no Suno account or network.
 const base = await loadDailyConfig('suno-daily.config.json');
-const config = { ...base, settleQuietMs: 150, settleTimeoutMs: 4000, authTimeoutMs: 4000, navigationTimeoutMs: 8000,
+// reportsSince off: this test walks the whole synthetic history.
+const config = { ...base, reportsSince: null, settleQuietMs: 150, settleTimeoutMs: 4000, authTimeoutMs: 4000, navigationTimeoutMs: 8000,
   pagination: { ...base.pagination, delayMs: 200 } };
 const GW = 'https://membros-api-gateway.suno.com.br/api/';
 const cors = { 'access-control-allow-origin': 'https://investidor.suno.com.br', 'access-control-allow-headers': 'x-auth,content-type',
