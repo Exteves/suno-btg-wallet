@@ -1,5 +1,20 @@
 # Contexto — 2026-11-02
 
+## Carteira BTG sob demanda — 2026-11-24
+
+Pedido: scraper da carteira BTG só com dados dos ativos, em banco, rodando apenas
+quando o usuário for rebalancear (sem agendamento). Mapeamento passivo (usuário fez
+login no Chrome temporário; script só escutou): a home carrega a posição completa em
+GET /investments/api/statement-position/allocation/{conta}/type/MARKET/summary
+(classes CC, VT, RV com sub-listas equityStock/equityListedFunds/…, RF com um item
+por título). Somas dos ativos batem com os totais das classes. `npm run btg:carteira`
+(src/btg-wallet/) abre o Chrome temporário, espera essa resposta, grava em
+privado/btg-carteira.sqlite (snapshots, class_totals, positions, views latest_*) e
+fecha; não envia requisições nem salva sessão. Conta/CPF/contato/tokens/IDs de
+operação removidos. Foto #1 gravada da resposta do mapeamento (posição 2026-11-24,
+24 ativos, sem avisos); pasta de mapeamento apagada. Sem fundos/previdência na
+carteira atual: se aparecerem, aviso CLASS_NOT_PARSED. Guia docs/BTG-CARTEIRA.md.
+
 ## Data de corte dos relatórios — 2026-11-23
 
 Usuário: não precisa dos relatórios anteriores, só a partir de hoje.
