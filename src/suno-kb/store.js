@@ -162,6 +162,18 @@ export class KnowledgeStore {
     return this.runId;
   }
 
+  // Runs left 'running' by a process that was killed (SIGKILL, shutdown):
+  // only called while holding the lock, so none of them is still alive.
+  abandonRunning() {
+    const rows = this.db.prepare("SELECT id FROM runs WHERE status='running'").all();
+    for (const { id } of rows) {
+      this.db.prepare('INSERT INTO issues(run_id, at, code, detail) VALUES (?, ?, ?, ?)').run(id, this.now().toISOString(), 'RUN_ABANDONED', '{}');
+      this.db.prepare("UPDATE runs SET status='failed', finished_at=coalesce(finished_at, ?), summary_json=? WHERE id=?")
+        .run(this.now().toISOString(), JSON.stringify({ error: 'RUN_ABANDONED' }), id);
+    }
+    return rows.map(row => row.id);
+  }
+
   finish(status, summary) {
     this.db.prepare('UPDATE runs SET finished_at=?, status=?, summary_json=? WHERE id=?')
       .run(this.now().toISOString(), status, JSON.stringify(summary), this.runId);

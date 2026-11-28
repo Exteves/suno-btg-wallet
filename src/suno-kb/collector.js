@@ -43,7 +43,7 @@ export async function installGuard(context, config, onBlock) {
 const within = (promise, ms, fallback) => Promise.race([promise.catch(() => fallback), sleep(ms).then(() => fallback)]);
 
 export class ResponseRecorder {
-  constructor({ store, full = false }) {
+  constructor({ store, full = false, log = () => {} }) {
     this.store = store;
     this.full = full;
     this.enabled = false;
@@ -54,7 +54,8 @@ export class ResponseRecorder {
     this.authFailures = 0;
     this.authHeaders = null;
     this.series = new Map();
-    this.stats = { stored: 0, items: 0, failed: 0, ignored: 0 };
+    this.stats = { stored: 0, items: 0, failed: 0, ignored: 0, httpErrors: 0 };
+    this.log = log;
     this.ingestions = [];
   }
 
@@ -94,7 +95,12 @@ export class ResponseRecorder {
       this.stats.ignored++;
       return;
     }
-    if (status < 200 || status >= 300) { this.store.inventory(classified.shape, method, 'http_error', status); return; }
+    if (status < 200 || status >= 300) {
+      this.stats.httpErrors++;
+      this.store.inventory(classified.shape, method, 'http_error', status);
+      this.log(`HTTP ${status} em ${classified.shape} (${method}, página ${this.route || '?'}).`);
+      return;
+    }
     let body;
     try { body = await within(response.json(), 20000, undefined); } catch { body = undefined; }
     if (body === undefined) { this.store.inventory(classified.shape, method, 'body_unavailable', status); return; }
@@ -293,7 +299,17 @@ export async function paginate(fetchPage, recorder, store, config, issue) {
   return summary;
 }
 
-export async function collectSuno({ context, page, config, store, recorder, onProgress = () => {},
+// What a page looked like after settling, for the journal (no page text).
+async function pageState(page) {
+  return page.evaluate(() => ({
+    readyState: document.readyState,
+    textChars: (document.querySelector('main, [role=main]') || document.body)?.innerText?.trim().length || 0,
+    links: document.querySelectorAll('a[href]').length,
+    busy: document.querySelectorAll('[aria-busy=true], [class*=skeleton i], [class*=loading i], [class*=spinner i]').length,
+  })).catch(() => null);
+}
+
+export async function collectSuno({ context, page, config, store, recorder, onProgress = () => {}, log = () => {},
   fetchPage = (url, options) => context.request.get(url, options) }) {
   const stats = { pages: 0, pagesFailed: 0, tabsClicked: 0, blocked: 0, pagination: { series: 0, requests: 0, capped: 0 }, sections: {} };
   const issue = (code, detail) => store.issue(code, detail);
@@ -315,10 +331,24 @@ export async function collectSuno({ context, page, config, store, recorder, onPr
       const pageId = store.page(section.name, route);
       recorder.route = route;
       const before = recorder.stats.stored;
+      const httpErrorsBefore = recorder.stats.httpErrors;
+      const startedAt = Date.now();
       try {
         await page.goto(new URL(route, config.baseUrl).href, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeoutMs });
         await recorder.settle(page, { quietMs: config.settleQuietMs, timeoutMs: config.settleTimeoutMs });
         if (onLoginPage(page)) throw Object.assign(new Error(), { code: 'LOGIN_REQUIRED' });
+        // Every page of every collection so far stored at least one response;
+        // none means the app had not rendered yet (2026-11-26: /carteiras
+        // settled in 4s with no text, no links and no wallet calls).
+        if (recorder.stats.stored === before) {
+          const state = await pageState(page);
+          log(`[${section.name}] ${route} sem respostas após ${Math.round((Date.now() - startedAt) / 1000)}s `
+            + `(estado ${JSON.stringify(state)}, pendentes ${recorder.pending.size}); recarregando e esperando mais.`);
+          await sleep(config.settleQuietMs * 2);
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: config.navigationTimeoutMs }).catch(() => {});
+          await recorder.settle(page, { quietMs: config.settleQuietMs * 2, timeoutMs: config.settleTimeoutMs });
+          if (onLoginPage(page)) throw Object.assign(new Error(), { code: 'LOGIN_REQUIRED' });
+        }
         const finalRoute = new URL(page.url()).pathname;
         const tabs = await clickTabs(page, config, recorder);
         stats.tabsClicked += tabs;
@@ -333,12 +363,18 @@ export async function collectSuno({ context, page, config, store, recorder, onPr
             if (!visited.has(path) && !queue.includes(path) && discovered < config.maxDiscoveredPerSection) { queue.push(path); discovered++; }
           }
         }
+        const gained = recorder.stats.stored - before;
+        const state = await pageState(page);
+        log(`[${section.name}] ${route} → ${finalRoute}: ${gained} respostas, ${recorder.stats.httpErrors - httpErrorsBefore} erros HTTP, `
+          + `${tabs} abas, ${state?.textChars ?? '?'} caracteres, ${state?.links ?? '?'} links, ${Math.round((Date.now() - startedAt) / 1000)}s.`);
+        if (!gained) issue('PAGE_EMPTY', { route, finalRoute, ...state });
         store.pageDone(pageId, { status: finalRoute.replace(/\/+$/, '') === route.replace(/\/+$/, '') ? 'captured' : 'redirected',
           finalRoute, tabsClicked: tabs, responses: recorder.stats.stored - before });
         if (finalRoute.replace(/\/+$/, '') !== route.replace(/\/+$/, '')) issue('PAGE_REDIRECTED', { route, finalRoute });
       } catch (error) {
         stats.pagesFailed++;
         const code = error.code === 'LOGIN_REQUIRED' ? 'LOGIN_REQUIRED' : error.name === 'TimeoutError' ? 'TIMEOUT' : 'PAGE_FAILED';
+        log(`[${section.name}] ${route} falhou: ${code} (${error.name || 'Error'}) após ${Math.round((Date.now() - startedAt) / 1000)}s.`);
         store.pageDone(pageId, { status: 'failed', errorCode: code, responses: recorder.stats.stored - before });
         issue(code, { route });
         if (code === 'LOGIN_REQUIRED') { recorder.authFailures++; return { stats, authLost: true }; }
@@ -351,7 +387,10 @@ export async function collectSuno({ context, page, config, store, recorder, onPr
     const kinds = SECTION_KINDS[section.name] || [];
     const gained = Object.fromEntries(Object.entries(after).map(([kind, n]) => [kind, n - (sectionStart[kind] || 0)]).filter(([, n]) => n > 0));
     stats.sections[section.name] = { responses: gained, discovered };
-    if (kinds.length && !kinds.some(kind => gained[kind])) issue('SECTION_WITHOUT_DATA', { section: section.name, expected: kinds });
+    if (kinds.length && !kinds.some(kind => gained[kind])) {
+      issue('SECTION_WITHOUT_DATA', { section: section.name, expected: kinds });
+      log(`[${section.name}] seção sem dados: esperado ${kinds.join('/')}, recebido ${JSON.stringify(gained)}, ${discovered} subpáginas.`);
+    }
     // 401s followed by successful authorized reads mean the app refreshed its token.
     if (recorder.authFailures > authStart.failed && recorder.authorizedOk === authStart.ok) {
       issue('AUTHORIZATION_FAILED', { section: section.name });

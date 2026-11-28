@@ -252,3 +252,68 @@ test('paginação de relatórios para na data de corte', async () => {
   assert.deepEqual(requested, [1]);   // the page itself loaded only old reports: no paging
   store.close();
 });
+
+// --- Diagnostics of the scheduled run (failures of 2026-11-24 and 2026-11-26) ---
+import { EventEmitter } from 'node:events';
+import { openBrowser, displayState, BrowserLog } from '../src/suno-kb/diagnostics.js';
+
+function fakeChromium(plan) {
+  let launches = 0;
+  return {
+    get launches() { return launches; },
+    async launch(options) {
+      const step = plan[launches++];
+      options.logger.log('browser', 'info', '[pid=1][err] weston segfault https://x.invalid/?token=abc');
+      if (step === 'launch-error') throw new Error('Executable doesn\'t exist at /x');
+      const browser = new EventEmitter();
+      browser.closed = false;
+      browser.close = async () => { browser.closed = true; };
+      browser.newContext = () => step === 'dies' ? new Promise(() => { setImmediate(() => browser.emit('disconnected')); }) : Promise.resolve({ newPage: async () => ({ ok: true }) });
+      return browser;
+    },
+  };
+}
+const gui = { DISPLAY: ':0', WAYLAND_DISPLAY: 'wayland-0', XDG_RUNTIME_DIR: '/run/user/1000' };
+
+test('browser dying during start-up is retried and logged instead of hanging', async () => {
+  const lines = [];
+  const chromium = fakeChromium(['dies', 'ok']);
+  const opened = await openBrowser({ chromium, log: l => lines.push(l), launchOptions: {}, contextOptions: {}, retryDelayMs: 1, env: gui, exists: () => true });
+  assert.equal(chromium.launches, 2);
+  assert.deepEqual(await opened.page, { ok: true });
+  assert.ok(lines.some(l => /criando contexto, tentativa 1\/3\): BROWSER_DISCONNECTED/.test(l)));
+  assert.ok(lines.some(l => l.includes('[chromium]') && l.includes('[URL]') && !l.includes('token=abc')));
+  assert.ok(lines.some(l => /tentativa 2/.test(l)));
+});
+
+test('permanent browser errors are not retried and carry the failing step', async () => {
+  const chromium = fakeChromium(['launch-error', 'ok']);
+  await assert.rejects(openBrowser({ chromium, log: () => {}, launchOptions: {}, contextOptions: {}, retryDelayMs: 1, env: gui, exists: () => true }),
+    error => error.code === 'BROWSER_NOT_INSTALLED' && error.stage === 'abrindo Chromium');
+  assert.equal(chromium.launches, 1);
+});
+
+test('gives up after the last attempt', async () => {
+  const chromium = fakeChromium(['dies', 'dies']);
+  await assert.rejects(openBrowser({ chromium, log: () => {}, launchOptions: {}, contextOptions: {}, attempts: 2, retryDelayMs: 1, env: gui, exists: () => true }),
+    error => error.code === 'BROWSER_DISCONNECTED');
+});
+
+test('display state reports sockets without exposing anything else', () => {
+  const state = displayState(gui, path => path === '/tmp/.X11-unix/X0');
+  assert.deepEqual([state.display, state.x11Socket, state.waylandSocket], [':0', true, false]);
+  const log = new BrowserLog(2);
+  for (const m of ['a', 'b', 'c']) log.logger.log('browser', 'info', m);
+  assert.deepEqual(log.tail(), ['info: b', 'info: c']);
+});
+
+test('runs left running by a killed process are closed as failed', () => {
+  const store = new KnowledgeStore(':memory:');
+  store.start('timer');
+  const ids = store.abandonRunning();
+  assert.deepEqual(ids, [1]);
+  assert.equal(store.db.prepare('SELECT status FROM runs WHERE id=1').get().status, 'failed');
+  assert.equal(store.db.prepare("SELECT count(*) n FROM issues WHERE code='RUN_ABANDONED'").get().n, 1);
+  assert.deepEqual(store.abandonRunning(), []);
+  store.close();
+});

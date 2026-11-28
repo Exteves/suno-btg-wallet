@@ -52,6 +52,28 @@ Códigos de saída: 0 completo, 2 parcial (dados gravados com avisos), 3 login
 necessário (rode `npm run daily` num terminal), 4 outra coleta em andamento, 1 falha.
 O chaveiro precisa estar desbloqueado na sessão Linux.
 
+### Investigar uma falha
+
+O journal (`journalctl --user -u suno-daily --since today`) registra:
+
+- `Etapa: …` a cada fase (sessão, navegador, login, páginas, conteúdo); toda
+  falha cita a etapa em que parou.
+- Abertura do navegador: até 3 tentativas, 30 s entre elas, esperando a tela do
+  WSLg. Cada falha traz o estado da tela (`DISPLAY`, sockets X11/Wayland, uptime,
+  salto do relógio, que indica suspensão) e as últimas mensagens do Chromium (sem URLs).
+- Uma linha por página: respostas gravadas, erros HTTP, abas, tamanho do texto,
+  links e duração. Página sem nenhuma resposta é recarregada uma vez com espera
+  maior; se continuar vazia, vira o aviso `PAGE_EMPTY`.
+- `HTTP <status> em <rota>` para respostas de erro da API.
+
+Falhas antes de a execução começar (navegador, chaveiro) e saídas com operação
+pendente (código 13) também viram uma execução `falhou` na base, com a etapa em
+`issues`, e aparecem no `npm run daily:status`.
+
+Casos já vistos: em 24/11/2026, ao sair da suspensão, o compositor do WSLg
+(weston) caiu quando o Chromium abriu a janela (segfault no `journalctl -k`); em
+26/11/2026, `/carteiras` terminou de carregar sem renderizar nada.
+
 ## Como os dados são obtidos
 
 O site é uma SPA que lê `membros-api-gateway.suno.com.br/api/`. O coletor navega

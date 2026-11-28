@@ -4,6 +4,8 @@ const messages = {
   BROWSER_NOT_INSTALLED: 'Chromium não está instalado. Execute npm run browser:install.',
   BROWSER_CHANNEL_MISSING: 'O Chrome/Edge solicitado não foi encontrado neste ambiente. Use um navegador instalado no mesmo sistema em que o Node executa, ou omita --browser-channel para usar o Chromium do Playwright.',
   DISPLAY_UNAVAILABLE: 'O Chromium não consegue acessar o ambiente gráfico. Verifique DISPLAY/Wayland ou WSLg na máquina local.',
+  BROWSER_START_TIMEOUT: 'O Chromium não respondeu ao abrir. Veja journalctl --user -u suno-daily para o estado da tela gráfica (WSLg).',
+  BROWSER_DISCONNECTED: 'O Chromium fechou durante a execução (por exemplo, a tela gráfica do WSLg caiu ao sair da suspensão).',
   BROWSER_LAUNCH_FAILED: 'O Chromium não conseguiu iniciar. Execute npm run doctor para verificar o ambiente.',
   NETWORK_DNS_FAILED: 'O domínio do site consultado não pôde ser resolvido (DNS). Verifique a rede/DNS do ambiente que executa o coletor.',
   NETWORK_TIMEOUT: 'O acesso ao site excedeu o tempo limite. Verifique a rede e tente novamente.',

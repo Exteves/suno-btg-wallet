@@ -10,13 +10,14 @@ import { privatePath, privateDirectory } from './privacy.js';
 import { SecretServiceKeyring } from './keyring.js';
 import { SessionVault, filterSessionState } from './session-vault.js';
 import { contextOptions } from './browser.js';
-import { AppError, classifyBrowserError, publicError } from './errors.js';
+import { AppError, publicError } from './errors.js';
 import { loadDailyConfig } from './suno-kb/config.js';
 import { KnowledgeStore } from './suno-kb/store.js';
 import { classifyEndpoint } from './suno-kb/endpoints.js';
 import { ResponseRecorder, checkAuthenticated, collectSuno, installGuard, onLoginPage } from './suno-kb/collector.js';
 import { collectReportContents } from './suno-kb/content.js';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { openBrowser, displayState } from './suno-kb/diagnostics.js';
 
 process.umask(0o077);
 const EXIT = { captured: 0, failed: 1, partial: 2, login: 3, locked: 4 };
@@ -42,6 +43,33 @@ function acquireLock(path) {
 
 let browser;
 let store;
+let trigger = 'manual';
+let dbPath = 'privado/suno-conhecimento.sqlite';
+let finished = false;
+// Current step, printed with any failure so the journal says where it stopped.
+let stage = 'início';
+const setStage = name => { stage = name; log(`Etapa: ${name}.`); };
+
+// Leaves a 'failed' run in the database even when the failure happened before
+// the run started (it used to show up only in the journal).
+function recordFailure(code, detail = {}) {
+  if (finished) return;
+  finished = true;
+  try {
+    store ??= new KnowledgeStore(privatePath(dbPath));
+    if (!store.runId) store.start(trigger);
+    store.issue(code, { stage, ...detail });
+    store.finish('failed', { error: code, stage });
+  } catch { /* database unavailable: the journal line is all we have */ }
+}
+
+// A promise that never settles (e.g. the browser died mid-call) drains the
+// event loop and Node exits with 13 without reaching catch/finally.
+process.on('exit', code => {
+  if (code !== 13) return;
+  log(`Encerrado com uma operação pendente na etapa "${stage}" (código 13). Ambiente: ${JSON.stringify(displayState())}`);
+  recordFailure('UNSETTLED_EXIT');
+});
 let releaseLock;
 let terminal;
 let shuttingDown = false;
@@ -72,6 +100,8 @@ try {
     process.exit(0);
   }
   if (!['manual', 'timer'].includes(values.trigger)) throw new AppError('CLI_USAGE');
+  trigger = values.trigger;
+  dbPath = values.db;
   const waitLoginMinutes = values['wait-login'] === undefined ? 0 : Number(values['wait-login']);
   if (!Number.isInteger(waitLoginMinutes) || waitLoginMinutes < 0 || waitLoginMinutes > 30) throw new AppError('CLI_USAGE');
   let config;
@@ -92,19 +122,29 @@ try {
     const runTimer = setTimeout(() => { log('Tempo máximo da execução atingido; encerrando o navegador.'); shuttingDown = true; void browser?.close().catch(() => {}); },
       (contentOnly ? config.content.contentRunTimeoutMinutes : config.runTimeoutMinutes) * 60000);
     runTimer.unref();
+    setStage('abrindo sessão');
     const keyring = new SecretServiceKeyring();
     await keyring.check();
     const vault = new SessionVault(privatePath('privado/auth/suno.session.enc.json'), keyring, { ttlMs: config.sessionTtlHours * 3600000 });
     const restored = await vault.load();
     log(restored.reason === 'restored' ? 'Sessão descriptografada em memória.' : restored.reason === 'expired' ? 'Sessão local expirada.' : 'Sem sessão salva.');
-    // Cloudflare blocks headless Chromium on this site (verified 2026-11-23).
-    try { browser = await chromium.launch({ headless: !!values.headless, ...(values['browser-path'] ? { executablePath: values['browser-path'] } : {}) }); }
-    catch (error) { throw classifyBrowserError(error); }
-    const context = await browser.newContext({ ...contextOptions({ authServiceWorkers: 'block' }, 'collection'), storageState: restored.state || undefined });
-    const page = await context.newPage();
-    page.on('dialog', dialog => dialog.dismiss());
     store = new KnowledgeStore(privatePath(values.db));
-    const recorder = new ResponseRecorder({ store, full: !!values.full });
+    const abandoned = store.abandonRunning();
+    if (abandoned.length) log(`Execução(ões) ${abandoned.join(', ')} interrompida(s) sem encerrar (processo morto); marcada(s) como falha.`);
+    setStage('abrindo navegador');
+    // Cloudflare blocks headless Chromium on this site (verified 2026-11-23).
+    const opened = await openBrowser({ chromium, log,
+      launchOptions: { headless: !!values.headless, ...(values['browser-path'] ? { executablePath: values['browser-path'] } : {}) },
+      contextOptions: { ...contextOptions({ authServiceWorkers: 'block' }, 'collection'), storageState: restored.state || undefined },
+      onBrowser: b => { browser = b; } });
+    const { context, page, browserLog } = opened;
+    browser.on('disconnected', () => {
+      if (shuttingDown || finished) return;
+      log(`Navegador desconectado na etapa "${stage}". Ambiente: ${JSON.stringify(displayState())}`);
+      for (const line of browserLog.tail()) log(`  [chromium] ${line}`);
+    });
+    page.on('dialog', dialog => dialog.dismiss());
+    const recorder = new ResponseRecorder({ store, full: !!values.full, log });
     recorder.attach(page);
     const sessionConfig = { baseUrl: config.baseUrl, sessionLocalStorageKeys: config.sessionLocalStorageKeys };
 
@@ -142,6 +182,7 @@ try {
       return result;
     };
 
+    setStage('confirmando login');
     let authenticated = await checkAuthenticated(page, recorder, config);
     if (!authenticated && waitLoginMinutes && !shuttingDown) {
       // No terminal: the person logs in in the window; an authorized API
@@ -167,6 +208,7 @@ try {
       store.start(values.trigger);
       store.issue('LOGIN_REQUIRED', 'Sessão ausente, expirada ou revogada.');
       store.finish('login_required', {});
+      finished = true;
       log('Login necessário: execute `npm run daily` em um terminal e autentique no navegador.');
       process.exitCode = EXIT.login;
     } else if (contentOnly) {
@@ -184,6 +226,7 @@ try {
       const status = content.authLost || content.interrupted || issues ? 'content_partial' : 'content_ok';
       const summary = { content: content.stats, contentTotals: store.contentCounts(config.reportsSince) };
       store.finish(status, summary);
+      finished = true;
       if (content.authLost) await vault.forget();
       else if (!shuttingDown) await context.storageState().then(state => vault.save(filterSessionState(state, sessionConfig))).catch(() => {});
       console.log(JSON.stringify({ runId, status, ...summary }, null, 2));
@@ -193,9 +236,10 @@ try {
       log('Sessão confirmada por resposta autorizada da API e salva criptografada.');
       const runId = store.start(values.trigger);
       log(`Execução ${runId} (${store.date}) iniciada${values.full ? ' em modo completo' : ''}.`);
+      setStage('coletando páginas');
       let result;
       try {
-        result = await collectSuno({ context, page, config, store, recorder,
+        result = await collectSuno({ context, page, config, store, recorder, log,
           onProgress: ({ section, route, page: n }) => log(`[${section}] página ${n}: ${route}`) });
       } catch (error) {
         if (!shuttingDown) throw error;
@@ -204,6 +248,7 @@ try {
       await recorder.flush();
       let content = { stats: {} };
       if (!result.authLost && !result.interrupted && !shuttingDown) {
+        setStage('baixando conteúdo dos relatórios');
         try { content = await fetchContents(contentLimit); }
         catch (error) { if (!shuttingDown) throw error; result.interrupted = true; }
         if (content.authLost) result.authLost = true;
@@ -216,6 +261,7 @@ try {
         : issues.length || result.interrupted || result.authLost ? 'partial' : 'captured';
       const summary = { ...result.stats, responsesByKind: counts, items: recorder.stats.items, content: content.stats, issues };
       store.finish(status, summary);
+      finished = true;
       if (result.authLost) await vault.forget();
       else if (!shuttingDown) await context.storageState().then(state => vault.save(filterSessionState(state, sessionConfig))).catch(() => {});
       console.log(JSON.stringify({ runId, date: store.date, status, ...summary }, null, 2));
@@ -225,8 +271,9 @@ try {
   }
 } catch (error) {
   const safe = publicError(shuttingDown ? new AppError('SESSION_CANCELLED') : error);
-  console.error(`[${safe.code}] ${safe.message}`);
-  try { if (store?.runId) store.finish('failed', { error: safe.code }); } catch { /* closed */ }
+  console.error(`[${safe.code}] ${safe.message} (etapa: ${error?.stage || stage})`);
+  if (!shuttingDown) log(`Ambiente na falha: ${JSON.stringify(displayState())}`);
+  recordFailure(safe.code, error?.stage ? { step: error.stage } : {});
   process.exitCode = EXIT.failed;
 } finally {
   terminal?.close();

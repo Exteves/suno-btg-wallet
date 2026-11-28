@@ -1,5 +1,19 @@
 # Contexto — 2026-11-02
 
+## Falhas da coleta Suno de 24/11 e 26/11 — 2026-11-27
+
+24/11 23:14 (timer ao sair da suspensão; saltos de relógio no journal): weston do
+WSLg deu segfault (rdp-backend.so, `journalctl -k`) quando o Chromium abriu a janela;
+newContext nunca resolveu, runTimer é unref → Node saiu com 13 sem catch e sem
+registro. 26/11: /carteiras ficou 4 s sem texto, links nem chamadas de carteira
+(nenhum erro HTTP/redirecionamento); seção sem dados → parcial. Nunca antes uma
+página teve 0 respostas. Correções: src/suno-kb/diagnostics.js (openBrowser com espera
+da tela, 3 tentativas, prazo por passo, detecção de desconexão, log do Chromium e do
+estado da tela/suspensão), etapas no journal, recordFailure (execução 'failed' mesmo
+antes de começar e no exit 13), log por página e recarga única quando a página não
+grava nada (aviso PAGE_EMPTY se persistir), log de HTTP de erro. Guia em
+docs/SUNO-DIARIO.md ("Investigar uma falha").
+
 ## Carteira BTG sob demanda — 2026-11-24
 
 Pedido: scraper da carteira BTG só com dados dos ativos, em banco, rodando apenas
